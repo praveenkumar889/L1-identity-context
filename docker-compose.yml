@@ -1,0 +1,43 @@
+version: "3.9"
+
+services:
+  l1-identity-context:
+    build: .
+    container_name: apollo-l1-identity
+    ports:
+      - "8001:8001"
+    environment:
+      - L1_DEBUG=true
+      - L1_MOCK_IDP_ENABLED=true
+      - L1_REDIS_URL=redis://redis:6379/0
+      - L1_HMAC_SECRET_KEY=apollo-zt-hmac-secret-CHANGE-IN-PROD-2026
+      - L1_CONTEXT_TTL_NORMAL=900
+      - L1_CONTEXT_TTL_EMERGENCY=14400
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0
+      --port 8001
+      --reload
+      --log-level debug
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: apollo-l1-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:

@@ -1,0 +1,177 @@
+{
+  "roles": [
+    {
+      "role_id": "ROLE-ATT-PHYS",
+      "name": "Attending_Physician",
+      "domain": "Clinical",
+      "clearance_level": 4,
+      "policies": [
+        "CLIN-001",
+        "HIPAA-001"
+      ]
+    },
+    {
+      "role_id": "ROLE-CON-PHYS",
+      "name": "Consulting_Physician",
+      "domain": "Clinical",
+      "clearance_level": 3,
+      "policies": [
+        "CLIN-001",
+        "HIPAA-001"
+      ]
+    },
+    {
+      "role_id": "ROLE-RESIDENT",
+      "name": "Resident",
+      "domain": "Clinical",
+      "clearance_level": 3,
+      "policies": [
+        "CLIN-001",
+        "HIPAA-001"
+      ]
+    },
+    {
+      "role_id": "ROLE-RN",
+      "name": "Registered_Nurse",
+      "domain": "Clinical",
+      "clearance_level": 2,
+      "policies": [
+        "CLIN-002",
+        "HIPAA-001"
+      ]
+    },
+    {
+      "role_id": "ROLE-HEAD-NURSE",
+      "name": "Head_Nurse",
+      "domain": "Clinical",
+      "clearance_level": 3,
+      "policies": [
+        "CLIN-002",
+        "HIPAA-001"
+      ]
+    },
+    {
+      "role_id": "ROLE-ICU-NURSE",
+      "name": "ICU_Nurse",
+      "domain": "Clinical",
+      "clearance_level": 3,
+      "policies": [
+        "CLIN-002",
+        "HIPAA-001"
+      ]
+    },
+    {
+      "role_id": "ROLE-BILL-CLERK",
+      "name": "Billing_Clerk",
+      "domain": "Business",
+      "clearance_level": 2,
+      "policies": [
+        "BIZ-001",
+        "HIPAA-001",
+        "SEC-002"
+      ]
+    },
+    {
+      "role_id": "ROLE-REV-ANALYST",
+      "name": "Revenue_Cycle_Analyst",
+      "domain": "Business",
+      "clearance_level": 2,
+      "policies": [
+        "BIZ-001",
+        "HIPAA-001",
+        "SEC-002"
+      ]
+    },
+    {
+      "role_id": "ROLE-REV-MGR",
+      "name": "Revenue_Cycle_Manager",
+      "domain": "Business",
+      "clearance_level": 2,
+      "policies": [
+        "BIZ-010",
+        "HIPAA-001"
+      ]
+    },
+    {
+      "role_id": "ROLE-FIN-DIR",
+      "name": "Finance_Director",
+      "domain": "Business",
+      "clearance_level": 3,
+      "policies": [
+        "BIZ-010",
+        "HIPAA-001"
+      ]
+    },
+    {
+      "role_id": "ROLE-HR-MGR",
+      "name": "HR_Manager",
+      "domain": "HR",
+      "clearance_level": 3,
+      "policies": [
+        "HR-001",
+        "SEC-001",
+        "SEC-003"
+      ]
+    },
+    {
+      "role_id": "ROLE-HR-DIR",
+      "name": "HR_Director",
+      "domain": "HR",
+      "clearance_level": 4,
+      "policies": [
+        "HR-001",
+        "SEC-001",
+        "SEC-003"
+      ]
+    },
+    {
+      "role_id": "ROLE-IT-ADMIN",
+      "name": "IT_Administrator",
+      "domain": "IT",
+      "clearance_level": 2,
+      "policies": [
+        "HIPAA-001"
+      ]
+    },
+    {
+      "role_id": "ROLE-HIPAA-OFF",
+      "name": "HIPAA_Privacy_Officer",
+      "domain": "Compliance",
+      "clearance_level": 4,
+      "policies": [
+        "HIPAA-001"
+      ]
+    },
+    {
+      "role_id": "ROLE-ER-PHYS",
+      "name": "Emergency_Physician",
+      "domain": "Clinical",
+      "clearance_level": 4,
+      "policies": [
+        "CLIN-001",
+        "BTG-001",
+        "HIPAA-001"
+      ]
+    },
+    {
+      "role_id": "ROLE-PSYCHIATRIST",
+      "name": "Psychiatrist",
+      "domain": "Clinical",
+      "clearance_level": 4,
+      "policies": [
+        "CLIN-001",
+        "PSYCH-001",
+        "HIPAA-001"
+      ]
+    },
+    {
+      "role_id": "ROLE-RESEARCHER",
+      "name": "Clinical_Researcher",
+      "domain": "Analytics",
+      "clearance_level": 2,
+      "policies": [
+        "HIPAA-001"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,588 @@
+╔══════════════════════════════════════════════════════════════════════════╗
+║             L1 IDENTITY & CONTEXT RESOLUTION LAYER                     ║
+║             SECURITY AUDIT & COMPLIANCE REPORT v1.0                    ║
+║                                                                        ║
+║  System:    Apollo Hospitals Zero Trust NL-to-SQL Pipeline              ║
+║  Layer:     L1 — Identity & Context Resolution (v2.0)                  ║
+║  Auditor:   Senior Security Auditor                                    ║
+║  Date:      2026-02-28                                                 ║
+║  Standard:  HIPAA Security Rule §164.312 / NIST SP 800-207 (Zero Trust)║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                    MVP COMPLIANCE SCORE:  72 / 100
+                    VERDICT:  ⚠️  NEEDS FIXES BEFORE PRODUCTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Score Breakdown:
+  JWT Validation .............. 18/20  (nbf not in require, JTI bypass)
+  Claims Extraction ........... 10/10  ✓ Complete
+  Directory Enrichment ........  7/10  (employment status NOT enforced)
+  Role Inheritance ............ 10/10  ✓ Complete — cycle-safe BFS
+  Clearance & Sensitivity ..... 10/10  ✓ Complete — MFA cap correct
+  SecurityContext Construction .  8/10  (patient_id lost, raw_claims in memory)
+  Signing & Integrity ......... 10/10  ✓ Complete — HMAC-SHA256 + compare_digest
+  Redis Session ................  9/10  (empty JTI bypass)
+  Break-Glass Flow .............  8/10  (no re-authentication, no structured audit)
+  Deductions (Critical/High) .. -18    (6 findings, weighted by severity)
+
+The architecture is strong. The modular separation is textbook. The crypto
+is correct. But 3 critical and 3 high-severity gaps prevent production
+clearance under HIPAA/Zero Trust standards.
+
+
+══════════════════════════════════════════════════════════════════════════
+ PART 1 — MVP FUNCTIONAL COMPLIANCE REVIEW
+══════════════════════════════════════════════════════════════════════════
+
+┌─────────────────────────────────────────────────────────────────────────
+│ 1️⃣  JWT VALIDATION                                    SCORE: 18/20
+└─────────────────────────────────────────────────────────────────────────
+
+  ✅ RS256 signature validation via JWKS
+     File: token_validation.py:187 — algorithms=[self._settings.JWT_ALGORITHM]
+     Algorithm is pinned to RS256 only. Explicit algorithms list prevents
+     alg-substitution attacks (e.g., alg:none, alg:HS256-with-public-key).
+     Confirmed via Test T11: InvalidAlgorithmError raised.
+
+  ✅ Issuer (iss) validation
+     File: token_validation.py:189 — issuer=self._settings.AZURE_ISSUER
+     Verified against configurable Azure AD issuer URL.
+
+  ✅ Audience (aud) validation
+     File: token_validation.py:188 — audience=self._settings.AZURE_CLIENT_ID
+     Prevents cross-tenant token reuse. Confirmed via Test T04.
+
+  ✅ Expiration (exp) validation
+     File: token_validation.py:192 — "verify_exp": True
+     Also in require list (line 198). Leeway of 30s for clock skew.
+     Confirmed via Test T02: ExpiredSignatureError raised.
+
+  ⚠️  Not-Before (nbf) validation — PARTIALLY IMPLEMENTED
+     File: token_validation.py:193 — "verify_nbf": True
+     BUT nbf is NOT in the require list (line 198):
+       "require": ["exp", "iat", "iss", "aud"]  ← nbf MISSING
+     A JWT without a nbf claim will be accepted. This violates the spec
+     which states "Verify: not-before (nbf)". If nbf is absent, verify_nbf
+     is a no-op in PyJWT.
+
+  ✅ Issued-At (iat) validation
+     In require list and verify_iat is True.
+
+  ✅ Reject invalid tokens with HTTP 401
+     File: token_validation.py:201-212 — 6 specific exception handlers
+     All raise TokenValidationError → context_builder wraps as 401.
+
+  ⚠️  JTI revocation check — BYPASS EXISTS
+     File: context_builder.py:109 —
+       if claims.jti and self._store.is_jti_blacklisted(claims.jti):
+     The `claims.jti and ...` short-circuits when jti is empty string.
+     token_validation.py:221 defaults to "" when jti is absent.
+     A JWT without a jti claim will NEVER be revocable.
+
+  ✅ JWKS caching exists
+     File: token_validation.py:130-138 — _get_jwks_client() caches by TTL
+     JWKS_CACHE_TTL_SECONDS = 3600 (1 hour). Re-creation only on expiry.
+
+  ✅ Token parsing is secure — no unsafe decoding
+     All decode calls use verify_signature=True. No `options={"verify_signature": False}`
+     anywhere in the codebase. Private key never exposed beyond MockKeyPair.
+
+
+┌─────────────────────────────────────────────────────────────────────────
+│ 2️⃣  CLAIMS EXTRACTION                                 SCORE: 10/10
+└─────────────────────────────────────────────────────────────────────────
+
+  ✅ oid or sub extracted
+     File: token_validation.py:215 — oid = decoded.get("oid") or decoded.get("sub", "")
+     Falls back from oid to sub (Azure AD v1 vs v2 tokens).
+
+  ✅ name extracted ............ line 216
+  ✅ email/preferred_username .. line 217 (prefers preferred_username over email)
+  ✅ roles ..................... line 218 (defaults to [])
+  ✅ groups .................... line 219 (defaults to [])
+  ✅ amr ....................... line 220 (defaults to [])
+  ✅ jti ....................... line 221
+
+  ✅ No mutable field reliance
+     Authorization decisions use oid (immutable Azure AD Object ID), roles,
+     and groups — never name or email.
+
+  ✅ Claims validated before usage
+     Line 223: Raises TokenValidationError if oid is missing.
+     Lines 235-237: Type-safe coercion (list wrapping for single values).
+
+
+┌─────────────────────────────────────────────────────────────────────────
+│ 3️⃣  DIRECTORY ENRICHMENT                               SCORE: 7/10
+└─────────────────────────────────────────────────────────────────────────
+
+  ✅ All 7 required fields provided:
+     employee_id, department, facility_ids, unit_ids, provider_npi,
+     license_type, employment_status — all present in EnrichedUserContext.
+
+  ✅ Missing attributes handled safely
+     File: user_enrichment.py:198-201 — _DEFAULT_CONTEXT returns:
+       employee_id="UNKNOWN", department="UNASSIGNED",
+       facility_ids=[], unit_ids=[], employment_status=ACTIVE
+     Unknown OIDs get minimal-access defaults. No crash. No null deref.
+
+  ❌ CRITICAL: Employment status NOT enforced
+     File: user_enrichment.py:232-236 —
+       if ctx.employment_status != EmploymentStatus.ACTIVE:
+           logger.warning(...)     ← LOGS the warning
+       return ctx                  ← RETURNS THE CONTEXT ANYWAY
+
+     File: context_builder.py:113-116 —
+       org_ctx = self._enrichment.enrich(claims.oid)
+       # ← NO CHECK ON org_ctx.employment_status
+       mfa_verified = "mfa" in claims.amr
+       resolved = self._role_resolver.resolve(claims.roles, mfa_verified)
+
+     Impact: A TERMINATED, SUSPENDED, or ON_LEAVE employee who still has
+     a valid Azure AD JWT (e.g., not yet disabled in Azure AD) receives
+     a fully functional SecurityContext with full role privileges.
+
+     HIPAA Violation: §164.312(d) — Person or Entity Authentication requires
+     that terminated workforce members have access revoked.
+
+
+┌─────────────────────────────────────────────────────────────────────────
+│ 4️⃣  ROLE INHERITANCE                                  SCORE: 10/10
+└─────────────────────────────────────────────────────────────────────────
+
+  ✅ Direct roles expanded to effective roles
+     File: role_resolver.py:269-282 — BFS _expand_role()
+     Example verified:
+       ATTENDING_PHYSICIAN → SENIOR_CLINICIAN → CLINICIAN
+         → HEALTHCARE_PROVIDER → EMPLOYEE → HIPAA_COVERED_ENTITY
+
+  ✅ Deterministic inheritance logic
+     BFS with sorted output (line 234: sorted(effective)). Same input always
+     produces same output. No randomness, no timestamp dependency.
+
+  ✅ No circular inheritance vulnerability
+     File: role_resolver.py:275-278 —
+       if current in visited: continue  ← cycle breaker
+     BFS visited-set guarantees termination. Confirmed via Test T12:
+     injected cycle A→B→C→A resolved in exactly 3 iterations.
+
+  ✅ Role resolution cannot escalate privileges
+     Inheritance only walks UPWARD (child → parent). Parents are always
+     more abstract/less privileged than children. The DAG is hardcoded and
+     immutable at runtime. No user input can modify the graph.
+
+
+┌─────────────────────────────────────────────────────────────────────────
+│ 5️⃣  CLEARANCE & SENSITIVITY LOGIC                     SCORE: 10/10
+└─────────────────────────────────────────────────────────────────────────
+
+  ✅ Roles mapped to clearance levels (1–5)
+     File: role_resolver.py:95-124 — ROLE_CLEARANCE dict
+     All 15 user roles mapped. Unknown roles default to PUBLIC (1).
+
+  ✅ sensitivity_cap adjusted based on MFA
+     File: role_resolver.py:295-312 — _apply_mfa_cap()
+     No MFA → cap reduced by 1. Floor at ClearanceLevel.PUBLIC (1).
+
+  ✅ Correct downgrade verified
+     Test T06:
+       Clearance 4 + MFA present → cap = 4 ✓
+       Clearance 4 + MFA absent  → cap = 3 ✓
+       Clearance 1 + MFA absent  → cap = 1 ✓ (floor)
+
+
+┌─────────────────────────────────────────────────────────────────────────
+│ 6️⃣  SECURITY CONTEXT CONSTRUCTION                     SCORE: 8/10
+└─────────────────────────────────────────────────────────────────────────
+
+  ✅ Contains all 5 required blocks:
+     identity, org_context, authorization, request_metadata, emergency
+
+  ✅ TTL correct: 900 normal / 14400 emergency
+     File: config.py:33-34 — CONTEXT_TTL_NORMAL=900, CONTEXT_TTL_EMERGENCY=14400
+     Confirmed via Tests T08, T10.
+
+  ⚠️  patient_id lost in BTG flow
+     File: context_builder.py:188 — accepts patient_id parameter
+     But it is NEVER stored in the SecurityContext or EmergencyBlock.
+     The EmergencyBlock model (security_context.py) has no patient_id field.
+     Audit trail is incomplete — cannot determine which patient triggered BTG.
+
+  ✅ Schema versioning present
+     File: security_context.py — version: str = Field(default="2.0")
+
+  ⚠️  raw_claims in memory
+     File: token_validation.py:50,239 — ValidatedClaims.raw_claims = decoded
+     The entire decoded JWT payload is carried in memory. Not persisted,
+     but available for accidental logging or serialisation.
+
+
+┌─────────────────────────────────────────────────────────────────────────
+│ 7️⃣  SIGNING & INTEGRITY                               SCORE: 10/10
+└─────────────────────────────────────────────────────────────────────────
+
+  ✅ Deterministic serialisation
+     File: signing.py:44-73 — _canonical_json()
+     sort_keys=True, separators=(",",":"), ensure_ascii=True, UTF-8.
+     Confirmed via Test T13: 3 identical signs, key-order independent.
+
+  ✅ HMAC-SHA256 implementation
+     File: signing.py:84-89 — hmac.new(..., digestmod=hashlib.sha256)
+     Standard library, no custom crypto. 64-char hex digest.
+
+  ✅ Constant-time comparison
+     File: signing.py:107 — hmac.compare_digest(expected, signature)
+     Prevents timing attacks on signature verification.
+
+  ✅ Tamper detection
+     Test T09: Changing clearance_level from 4→5 changes signature.
+               Changing identity.oid changes signature.
+               Both detected correctly.
+
+  ✅ No post-sign mutation
+     context_builder.py:167-170 — sign, then store, then return.
+     No field modifications between signing and return.
+     BTG flow: builds NEW context object, signs fresh, stores fresh.
+
+
+┌─────────────────────────────────────────────────────────────────────────
+│ 8️⃣  REDIS SESSION MANAGEMENT                          SCORE: 9/10
+└─────────────────────────────────────────────────────────────────────────
+
+  ✅ Context stored with TTL
+     File: redis_store.py:121-122 — setex(key, ctx.ttl_seconds, value)
+     Both Redis (native TTL) and in-memory fallback (expire_at check).
+
+  ✅ TTL enforced — expired sessions rejected
+     Redis: setex auto-deletes on expiry.
+     In-memory: _get() checks time.time() > expire_at (lines 78-80).
+
+  ✅ JTI blacklist functional
+     File: redis_store.py:158-170 — blacklist_jti() / is_jti_blacklisted()
+
+  ⚠️  Empty JTI bypass (see Critical Issue #2)
+
+
+┌─────────────────────────────────────────────────────────────────────────
+│ 9️⃣  BREAK-GLASS FLOW                                  SCORE: 8/10
+└─────────────────────────────────────────────────────────────────────────
+
+  ✅ Requires base valid SecurityContext
+     File: context_builder.py:209-211 — fetches from Redis, 404 if missing.
+
+  ✅ Reason captured
+     File: context_builder.py:259 — reason=reason.strip()
+     Min length enforced (20 chars, line 229).
+
+  ✅ TTL extended to 14400
+     File: context_builder.py:265 — ttl_seconds=emergency_ttl (14400)
+
+  ✅ Emergency flag set
+     File: context_builder.py:258 — mode=EmergencyMode.ACTIVE
+
+  ✅ Break-glass does NOT permanently elevate clearance
+     Original clearance preserved in emergency.original_clearance (line 240).
+     Elevated context has TTL — auto-expires from Redis.
+     No modification to the role resolver or base user record.
+
+  ⚠️  No re-authentication on BTG endpoint (see High Issue #3)
+
+  ⚠️  Audit event is logger.warning only — no structured audit event
+     File: context_builder.py:276-279 — logger.warning(...)
+     Should emit a structured event to L8 audit bus.
+     HIPAA §164.312(b) requires audit controls for emergency access.
+
+
+══════════════════════════════════════════════════════════════════════════
+ PART 2 — SECURITY REVIEW
+══════════════════════════════════════════════════════════════════════════
+
+┌─────────────────────────────────────────────────────────────────────────
+│ 🔴 CRITICAL ISSUES (2)
+└─────────────────────────────────────────────────────────────────────────
+
+  CRIT-01 │ Employment Status Not Enforced
+  ────────┼──────────────────────────────────────────────────────────────
+  Files   │ user_enrichment.py:232-236, context_builder.py:113
+  Impact  │ Terminated/Suspended employees receive valid SecurityContexts
+  Attack  │ Ex-employee with cached Azure AD JWT accesses patient data
+  HIPAA   │ §164.312(d) violation — access not revoked on termination
+  Fix     │ Add guard in context_builder.py after enrichment:
+          │   if org_ctx.employment_status != EmploymentStatus.ACTIVE:
+          │       raise ContextBuildError("Account disabled", status_code=403)
+          │ Also: user_enrichment.py should raise, not just log.
+
+  CRIT-02 │ Empty JTI Bypasses Revocation
+  ────────┼──────────────────────────────────────────────────────────────
+  File    │ context_builder.py:109
+  Code    │ if claims.jti and self._store.is_jti_blacklisted(claims.jti):
+  Impact  │ A JWT without a jti claim can never be revoked
+  Attack  │ Attacker obtains a jti-less token; /revoke has no effect
+  Fix     │ Require jti in token validation:
+          │   if not jti_val:
+          │       raise TokenValidationError("Token missing required claim: jti")
+          │ Or add "jti" to the require list in pyjwt.decode options.
+
+
+┌─────────────────────────────────────────────────────────────────────────
+│ 🟠 HIGH SEVERITY ISSUES (3)
+└─────────────────────────────────────────────────────────────────────────
+
+  HIGH-01 │ /break-glass Endpoint Has No Authentication
+  ────────┼──────────────────────────────────────────────────────────────
+  File    │ routes.py:148 — async def break_glass(req: BreakGlassRequest, ...)
+  Issue   │ No Authorization header parameter. No JWT validation.
+          │ Only requires ctx_token in request body.
+  Attack  │ Attacker intercepts ctx_token from network traffic or logs,
+          │ calls /break-glass to escalate to clearance 5 with arbitrary
+          │ reason. No proof they are the session owner.
+  Fix     │ Require Bearer JWT in header. Validate JWT.
+          │ Verify JWT oid matches ctx.identity.oid.
+
+  HIGH-02 │ /revoke Endpoint Has No Authentication
+  ────────┼──────────────────────────────────────────────────────────────
+  File    │ routes.py:190
+  Issue   │ Same pattern — any actor with ctx_token can revoke sessions.
+  Attack  │ DoS: enumerate or intercept ctx_tokens, mass-revoke sessions.
+  Fix     │ Same: require Bearer JWT + oid match.
+
+  HIGH-03 │ /mock/token Endpoint Registered Unconditionally
+  ────────┼──────────────────────────────────────────────────────────────
+  File    │ routes.py:231-282, main.py:88
+  Issue   │ The mock token generator is always registered in the router.
+          │ Runtime check (line 254) is the only guard. If MOCK_IDP_ENABLED
+          │ is accidentally set to true in production environment variables,
+          │ anyone can mint arbitrary JWTs for any role/clearance.
+  Fix     │ Conditionally register the route:
+          │   if settings.MOCK_IDP_ENABLED:
+          │       app.include_router(mock_router)
+          │ Or: put mock routes in a separate router, register conditionally.
+
+
+┌─────────────────────────────────────────────────────────────────────────
+│ 🟡 MEDIUM ISSUES (5)
+└─────────────────────────────────────────────────────────────────────────
+
+  MED-01 │ nbf Not in JWT Require List
+  ───────┼──────────────────────────────────────────────────────────────
+  File   │ token_validation.py:198
+  Code   │ "require": ["exp", "iat", "iss", "aud"]
+  Issue  │ Tokens without nbf claim are accepted. Spec mandates nbf check.
+  Fix    │ Add "nbf" to require list.
+
+  MED-02 │ patient_id Not Stored in BTG SecurityContext
+  ───────┼──────────────────────────────────────────────────────────────
+  File   │ context_builder.py:188, security_context.py EmergencyBlock
+  Issue  │ patient_id parameter accepted but never persisted.
+  Impact │ Audit trail cannot determine which patient triggered BTG.
+  Fix    │ Add patient_id: Optional[str] to EmergencyBlock model.
+         │ Store in emergency block during BTG activation.
+
+  MED-03 │ BTG-001 Policy Duplication
+  ───────┼──────────────────────────────────────────────────────────────
+  File   │ context_builder.py:255
+  Code   │ bound_policies=ctx.authorization.bound_policies + ["BTG-001"]
+  Issue  │ EMERGENCY_PHYSICIAN already has BTG-001 in ROLE_POLICIES.
+         │ After BTG: ["CLIN-001", "HIPAA-001", "BTG-001", "BTG-001"]
+  Fix    │ Use set union: list(set(ctx.authorization.bound_policies) | {"BTG-001"})
+
+  MED-04 │ In-Memory Redis Fallback Should Fail Hard in Production
+  ───────┼──────────────────────────────────────────────────────────────
+  File   │ redis_store.py:57-58
+  Issue  │ Silent in-memory fallback when Redis is unavailable.
+         │ In production, sessions aren't shared across replicas.
+  Fix    │ When MOCK_IDP_ENABLED=False, raise on Redis connection failure.
+
+  MED-05 │ No Rate Limiting on Any Endpoint
+  ───────┼──────────────────────────────────────────────────────────────
+  Issue  │ No request throttling. Token flood can overwhelm Redis.
+  Fix    │ Add slowapi or custom rate limiter middleware.
+
+
+┌─────────────────────────────────────────────────────────────────────────
+│ Zero Trust Discipline Verification
+└─────────────────────────────────────────────────────────────────────────
+
+  ✅ No downstream re-authentication bypass
+     SecurityContext is always built from validated JWT. No shortcuts.
+     Each request requires full pipeline traversal.
+
+  ✅ No direct DB access from Identity Layer
+     L1 touches only Redis (session store) and mock data files.
+     No SQL connections, no patient data access.
+
+  ⚠️  SecurityContext modification after signing — PARTIAL CONCERN
+     Normal flow: sign → store → return. No mutation. ✓
+     BTG flow: fetch → rebuild → re-sign → re-store. Correct pattern. ✓
+     However: the signed context in Redis can be re-fetched and consumed
+     by downstream layers WITHOUT re-verifying the signature. The
+     signature is only returned to the caller, not stored alongside
+     the context in Redis.
+
+  ⚠️  Signature not stored with context
+     redis_store.py stores only the SecurityContext, not its signature.
+     Downstream layers receive ctx_token + signature from the API response,
+     but if they fetch the context from Redis directly, they cannot verify
+     integrity. Recommendation: store signature alongside context in Redis.
+
+
+══════════════════════════════════════════════════════════════════════════
+ PART 3 — FUNCTIONAL TEST RESULTS
+══════════════════════════════════════════════════════════════════════════
+
+  All 15 tests executed against the JWT validation logic, signing logic,
+  and security policy enforcement using PyJWT 2.7.0 + cryptography 46.0.5.
+
+  ┌──────┬────────────────────────────────────────────────────┬────────┐
+  │ Test │ Scenario                                           │ Result │
+  ├──────┼────────────────────────────────────────────────────┼────────┤
+  │ T01  │ Valid JWT → SecurityContext created                │  ✅    │
+  │ T02  │ Expired JWT → 401 (ExpiredSignatureError)         │  ✅    │
+  │ T03  │ Invalid signature → 401 (InvalidSignatureError)   │  ✅    │
+  │ T04  │ Wrong audience → 401 (InvalidAudienceError)       │  ✅    │
+  │ T05  │ Revoked JTI → 401 (blacklist hit)                 │  ✅ ⚠️ │
+  │ T06  │ Missing MFA → cap reduced (4→3, floor at 1)       │  ✅    │
+  │ T07  │ Inactive employee → access denied                 │  ✅ 🔴 │
+  │ T08  │ Emergency mode → TTL 900→14400, clearance 4→5     │  ✅    │
+  │ T09  │ Signature tampering → verification fails          │  ✅    │
+  │ T10  │ Expired SecurityContext → rejected (TTL enforced)  │  ✅    │
+  ├──────┼────────────────────────────────────────────────────┼────────┤
+  │ T11  │ alg:none attack → blocked (InvalidAlgorithmError) │  ✅    │
+  │ T12  │ Role inheritance cycle → terminates (3 iters)     │  ✅    │
+  │ T13  │ HMAC deterministic serialization (3x identical)   │  ✅    │
+  │ T14  │ /break-glass authentication gap                   │  ✅ 🟠 │
+  │ T15  │ /revoke authentication gap                        │  ✅ 🟠 │
+  └──────┴────────────────────────────────────────────────────┴────────┘
+
+  T05 ⚠️  = Primary flow works, but empty JTI bypasses blacklist
+  T07 🔴 = Test CONFIRMS the vulnerability — inactive users NOT blocked
+  T14 🟠 = Test CONFIRMS no auth required on /break-glass
+  T15 🟠 = Test CONFIRMS no auth required on /revoke
+
+
+══════════════════════════════════════════════════════════════════════════
+ PART 4 — CODE QUALITY REVIEW
+══════════════════════════════════════════════════════════════════════════
+
+  ✅ Modular Separation                                    EXCELLENT
+     6 service modules with clear single responsibilities:
+     ┌─────────────────────────┬───────┬─────────────────────────┐
+     │ Module                  │ Lines │ Responsibility          │
+     ├─────────────────────────┼───────┼─────────────────────────┤
+     │ token_validation.py     │  249  │ JWT RS256 + claims      │
+     │ context_builder.py      │  301  │ Orchestration pipeline  │
+     │ role_resolver.py        │  329  │ Neo4j DAG + clearance   │
+     │ signing.py              │  113  │ HMAC-SHA256             │
+     │ redis_store.py          │  170  │ Session + JTI blacklist │
+     │ user_enrichment.py      │  242  │ Mock HR/LDAP            │
+     └─────────────────────────┴───────┴─────────────────────────┘
+     Clean dependency injection via dependencies.py.
+     Single router in routes.py. No circular imports.
+
+  ✅ No Hardcoded Secrets (in service code)
+     HMAC key, JWT secret, Redis URL — all env-driven (config.py L1_ prefix).
+     config.py:39 has a dev default with "CHANGE-IN-PROD" marker.
+     Recommendation: add startup validation that HMAC_SECRET_KEY != default
+     when MOCK_IDP_ENABLED=False.
+
+  ✅ Exception Handling                                    GOOD
+     6 specific PyJWT exception handlers in token_validation.py.
+     ContextBuildError wraps all downstream errors with HTTP status codes.
+     No bare `except:` clauses. No swallowed exceptions.
+
+  ✅ Logging                                               GOOD
+     Structured logger names (l1.token_validation, l1.context_builder, etc.)
+     Appropriate levels: INFO for normal flow, WARNING for anomalies,
+     ERROR for failures. BTG uses WARNING level (correct — audit-significant).
+     Minor concern: oid logged at INFO level (PII-adjacent in HIPAA context).
+
+  ✅ API Response Structure                                GOOD
+     Typed Pydantic response models (ResolveContextResponse, BreakGlassResponse).
+     context_preview provides lightweight routing data without full context.
+     Error responses are structured (ErrorResponse model defined but could be
+     used more consistently via exception handlers).
+
+  ✅ Type Safety                                           EXCELLENT
+     Pydantic v2 models throughout. Dataclasses for internal types.
+     Enums for all categorical values (ClearanceLevel, Domain, EmergencyMode).
+     No `Any` types in public APIs.
+
+
+══════════════════════════════════════════════════════════════════════════
+ SUGGESTED IMPROVEMENTS (Beyond Required Fixes)
+══════════════════════════════════════════════════════════════════════════
+
+  1. STORE SIGNATURE IN REDIS ALONGSIDE CONTEXT
+     Currently only the SecurityContext is stored. Downstream layers that
+     read from Redis directly cannot verify integrity. Store as:
+       {"context": {...}, "signature": "a1b2c3..."}
+
+  2. ADD STRUCTURED AUDIT EVENTS
+     Replace logger.warning for BTG with structured event emission to
+     a dedicated audit channel (L8 integration). Include:
+       event_type, timestamp, actor_oid, patient_id, reason, clearance_change
+
+  3. ADD STARTUP SECRET VALIDATION
+     On startup, verify HMAC_SECRET_KEY != default when not in mock mode.
+     Prevents production deployment with dev credentials.
+
+  4. ADD REQUEST ID / CORRELATION ID
+     Propagate a request_id through all log entries for distributed tracing.
+     Essential for incident response in a multi-layer pipeline.
+
+  5. REMOVE raw_claims FROM ValidatedClaims
+     The full decoded JWT payload is carried in memory unnecessarily.
+     Only the extracted typed fields should survive past validation.
+
+  6. CONSIDER CONTEXT VERSIONING STRATEGY
+     version="2.0" is hardcoded. If the SecurityContext schema changes,
+     downstream layers need to handle version negotiation. Add version
+     to the Redis key or context_preview for compatibility checks.
+
+  7. ADD HEALTH CHECK DEPTH
+     Current /health only checks Redis ping. Should also verify:
+     - Mock IdP keypair is initialised (if enabled)
+     - HMAC secret is loaded
+     - At least 1 user exists in enrichment directory
+
+
+══════════════════════════════════════════════════════════════════════════
+ FINAL SUMMARY
+══════════════════════════════════════════════════════════════════════════
+
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │                                                                      │
+  │  MVP COMPLIANCE SCORE .............. 72 / 100                        │
+  │                                                                      │
+  │  Critical Issues ................... 2                                │
+  │    CRIT-01  Employment status not enforced                           │
+  │    CRIT-02  Empty JTI bypasses revocation                            │
+  │                                                                      │
+  │  High Severity Issues .............. 3                                │
+  │    HIGH-01  /break-glass has no authentication                       │
+  │    HIGH-02  /revoke has no authentication                            │
+  │    HIGH-03  /mock/token registered in production builds              │
+  │                                                                      │
+  │  Medium Issues ..................... 5                                │
+  │    MED-01   nbf not in JWT require list                              │
+  │    MED-02   patient_id not stored in BTG context                     │
+  │    MED-03   BTG-001 policy duplication                               │
+  │    MED-04   Silent Redis fallback in production                      │
+  │    MED-05   No rate limiting                                         │
+  │                                                                      │
+  │  VERDICT:  ⚠️  NEEDS FIXES BEFORE PRODUCTION                        │
+  │                                                                      │
+  │  The architecture is STRONG. Modular separation is textbook.         │
+  │  Crypto implementations are CORRECT (RS256, HMAC-SHA256, constant-   │
+  │  time compare). Role inheritance is cycle-safe. MFA cap logic works. │
+  │                                                                      │
+  │  But 2 critical + 3 high severity issues must be resolved before     │
+  │  this layer can be trusted in a HIPAA-regulated healthcare           │
+  │  environment. Estimated remediation effort: 2-4 hours.               │
+  │                                                                      │
+  │  After fixing CRIT-01, CRIT-02, HIGH-01, HIGH-02, HIGH-03:          │
+  │  Projected score: 91/100 — PRODUCTION READY with monitoring.         │
+  │                                                                      │
+  └──────────────────────────────────────────────────────────────────────┘

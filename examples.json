@@ -1,0 +1,131 @@
+{
+  "description": "Example artifacts for L1 Identity & Context Resolution",
+
+  "mock_jwt_payload": {
+    "_comment": "This is the JWT payload that the mock IdP generates for dr-patel-4521 (Attending Physician, Cardiology, Clearance 4, MFA verified). The actual JWT is RS256-signed with the mock RSA keypair.",
+    "oid": "oid-dr-patel-4521",
+    "sub": "oid-dr-patel-4521",
+    "name": "Dr. Rajesh Patel",
+    "preferred_username": "dr.patel@apollohospitals.com",
+    "email": "dr.patel@apollohospitals.com",
+    "roles": ["ATTENDING_PHYSICIAN"],
+    "groups": ["clinical-cardiology"],
+    "amr": ["pwd", "mfa"],
+    "jti": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "iss": "https://login.microsoftonline.com/apollo-mock-tenant/v2.0",
+    "aud": "apollo-zt-pipeline",
+    "iat": 1740700800,
+    "nbf": 1740700800,
+    "exp": 1740704400
+  },
+
+  "example_response_resolve_security_context": {
+    "_endpoint": "POST /resolve-security-context",
+    "_header": "Authorization: Bearer eyJ...<RS256-signed JWT>",
+    "ctx_token": "ctx_a1b2c3d4e5f6789012345678abcdef01",
+    "signature": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "expires_in": 900,
+    "created_at": "2026-02-28T10:00:00.000000+00:00",
+    "context_preview": {
+      "oid": "oid-dr-patel-4521",
+      "name": "Dr. Rajesh Patel",
+      "email": "dr.patel@apollohospitals.com",
+      "department": "Cardiology",
+      "domain": "CLINICAL",
+      "direct_roles": ["ATTENDING_PHYSICIAN"],
+      "effective_roles": [
+        "ATTENDING_PHYSICIAN",
+        "CLINICIAN",
+        "EMPLOYEE",
+        "HEALTHCARE_PROVIDER",
+        "HIPAA_COVERED_ENTITY",
+        "SENIOR_CLINICIAN"
+      ],
+      "clearance_level": 4,
+      "sensitivity_cap": 4,
+      "mfa_verified": true,
+      "emergency_mode": "NONE"
+    }
+  },
+
+  "example_response_break_glass": {
+    "_endpoint": "POST /break-glass",
+    "_body": {
+      "ctx_token": "ctx_a1b2c3d4e5f6789012345678abcdef01",
+      "reason": "Emergency cardiac arrest patient in ER bay 3, need full history immediately",
+      "patient_id": "PAT-00042"
+    },
+    "ctx_token": "ctx_a1b2c3d4e5f6789012345678abcdef01",
+    "signature": "7d865e959b2466918c9863afca942d0fb89d7c9ac0c99bafc3749504ded97730",
+    "expires_in": 14400,
+    "emergency_mode": "ACTIVE",
+    "previous_clearance": 4,
+    "elevated_clearance": 5,
+    "message": "Break-the-Glass activated. Clearance elevated from 4 to 5. TTL extended to 14400s."
+  },
+
+  "example_full_security_context": {
+    "_comment": "This is the full SecurityContext stored in Redis — the PRIMARY OUTPUT consumed by L2-L8.",
+    "ctx_id": "ctx_a1b2c3d4e5f6789012345678abcdef01",
+    "version": "2.0",
+    "identity": {
+      "oid": "oid-dr-patel-4521",
+      "name": "Dr. Rajesh Patel",
+      "email": "dr.patel@apollohospitals.com",
+      "jti": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "mfa_verified": true,
+      "auth_methods": ["pwd", "mfa"]
+    },
+    "org_context": {
+      "employee_id": "DR-0001",
+      "department": "Cardiology",
+      "facility_ids": ["FAC-001"],
+      "unit_ids": ["UNIT-1A-APJH", "UNIT-1B-APJH"],
+      "provider_npi": "NPI-1234567890",
+      "license_type": "MD",
+      "employment_status": "ACTIVE"
+    },
+    "authorization": {
+      "direct_roles": ["ATTENDING_PHYSICIAN"],
+      "effective_roles": [
+        "ATTENDING_PHYSICIAN",
+        "CLINICIAN",
+        "EMPLOYEE",
+        "HEALTHCARE_PROVIDER",
+        "HIPAA_COVERED_ENTITY",
+        "SENIOR_CLINICIAN"
+      ],
+      "groups": ["clinical-cardiology"],
+      "domain": "CLINICAL",
+      "clearance_level": 4,
+      "sensitivity_cap": 4,
+      "bound_policies": ["CLIN-001", "HIPAA-001"]
+    },
+    "request_metadata": {
+      "ip_address": "10.0.0.1",
+      "user_agent": "Mozilla/5.0 (Apollo Clinical Workstation)",
+      "timestamp": "2026-02-28T10:00:00.000000+00:00",
+      "session_id": "ses_a1b2c3d4e5f67890"
+    },
+    "emergency": {
+      "mode": "NONE",
+      "reason": null,
+      "activated_at": null,
+      "expires_at": null,
+      "original_clearance": null
+    },
+    "ttl_seconds": 900,
+    "created_at": "2026-02-28T10:00:00.000000+00:00",
+    "expires_at": "2026-02-28T10:15:00.000000+00:00"
+  },
+
+  "example_no_mfa_sensitivity_reduction": {
+    "_comment": "When MFA is absent from the amr claim, sensitivity_cap is reduced by 1 from the base clearance_level.",
+    "amr_in_jwt": ["pwd"],
+    "role": "ATTENDING_PHYSICIAN",
+    "base_clearance_level": 4,
+    "sensitivity_cap_with_mfa": 4,
+    "sensitivity_cap_without_mfa": 3,
+    "explanation": "Without MFA, a clearance-4 user cannot access level-4 (Highly Confidential) data. They are capped at level-3 (Confidential)."
+  }
+}

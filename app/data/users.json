@@ -1,0 +1,187 @@
+{
+  "users": [
+    {
+      "user_id": "dr-patel-4521",
+      "employee_id": "DR-0001",
+      "name": "Dr. Rajesh Patel",
+      "role": "Attending_Physician",
+      "department": "Cardiology",
+      "facility": "FAC-001",
+      "assigned_units": [
+        "UNIT-1A-APJH",
+        "UNIT-1B-APJH"
+      ],
+      "clearance": 4,
+      "mfa_enabled": true
+    },
+    {
+      "user_id": "dr-sharma-1102",
+      "employee_id": "DR-0002",
+      "name": "Dr. Priya Sharma",
+      "role": "Consulting_Physician",
+      "department": "Oncology",
+      "facility": "FAC-002",
+      "assigned_units": [
+        "UNIT-3A-IPAH",
+        "UNIT-3B-IPAH"
+      ],
+      "clearance": 3,
+      "mfa_enabled": true
+    },
+    {
+      "user_id": "dr-reddy-2233",
+      "employee_id": "DR-0003",
+      "name": "Dr. Aditya Reddy",
+      "role": "Emergency_Physician",
+      "department": "Emergency Medicine",
+      "facility": "FAC-003",
+      "assigned_units": [
+        "UNIT-ER-APGR",
+        "UNIT-MICU-APGR"
+      ],
+      "clearance": 4,
+      "btg_eligible": true,
+      "mfa_enabled": true
+    },
+    {
+      "user_id": "dr-iyer-3301",
+      "employee_id": "DR-0004",
+      "name": "Dr. Meera Iyer",
+      "role": "Psychiatrist",
+      "department": "Psychiatry",
+      "facility": "FAC-001",
+      "assigned_units": [],
+      "clearance": 4,
+      "mfa_enabled": true
+    },
+    {
+      "user_id": "nurse-kumar-2847",
+      "employee_id": "EMP-0151",
+      "name": "Anita Kumar",
+      "role": "Registered_Nurse",
+      "department": "Cardiology",
+      "facility": "FAC-001",
+      "assigned_units": [
+        "UNIT-1A-APJH",
+        "UNIT-1B-APJH"
+      ],
+      "clearance": 2,
+      "mfa_enabled": true
+    },
+    {
+      "user_id": "nurse-nair-3102",
+      "employee_id": "EMP-0160",
+      "name": "Deepa Nair",
+      "role": "ICU_Nurse",
+      "department": "Emergency Medicine",
+      "facility": "FAC-003",
+      "assigned_units": [
+        "UNIT-MICU-APGR"
+      ],
+      "clearance": 3,
+      "mfa_enabled": true
+    },
+    {
+      "user_id": "nurse-singh-4455",
+      "employee_id": "EMP-0165",
+      "name": "Rajesh Singh",
+      "role": "Head_Nurse",
+      "department": "Neurology",
+      "facility": "FAC-002",
+      "assigned_units": [
+        "UNIT-2A-IPAH",
+        "UNIT-2B-IPAH"
+      ],
+      "clearance": 3,
+      "mfa_enabled": true
+    },
+    {
+      "user_id": "bill-maria-5521",
+      "employee_id": "EMP-0301",
+      "name": "Maria Fernandes",
+      "role": "Billing_Clerk",
+      "department": "Billing & Revenue Cycle",
+      "facility": "FAC-001",
+      "assigned_units": [],
+      "clearance": 2,
+      "mfa_enabled": true
+    },
+    {
+      "user_id": "bill-suresh-5530",
+      "employee_id": "EMP-0305",
+      "name": "Suresh Gupta",
+      "role": "Revenue_Cycle_Analyst",
+      "department": "Billing & Revenue Cycle",
+      "facility": "FAC-002",
+      "assigned_units": [],
+      "clearance": 2,
+      "mfa_enabled": true
+    },
+    {
+      "user_id": "rev-james-6601",
+      "employee_id": "EMP-0310",
+      "name": "James Thomas",
+      "role": "Revenue_Cycle_Manager",
+      "department": "Billing & Revenue Cycle",
+      "facility": "FAC-001",
+      "assigned_units": [],
+      "clearance": 2,
+      "mfa_enabled": true
+    },
+    {
+      "user_id": "hr-priya-7701",
+      "employee_id": "EMP-0351",
+      "name": "Priya Mehta",
+      "role": "HR_Manager",
+      "department": "Human Resources",
+      "facility": "FAC-001",
+      "assigned_units": [],
+      "clearance": 3,
+      "mfa_enabled": true
+    },
+    {
+      "user_id": "hr-dir-kapoor",
+      "employee_id": "EMP-0355",
+      "name": "Rohit Kapoor",
+      "role": "HR_Director",
+      "department": "Human Resources",
+      "facility": "FAC-001",
+      "assigned_units": [],
+      "clearance": 4,
+      "mfa_enabled": true
+    },
+    {
+      "user_id": "it-admin-7801",
+      "employee_id": "EMP-0371",
+      "name": "Vikram Joshi",
+      "role": "IT_Administrator",
+      "department": "Information Technology",
+      "facility": "FAC-001",
+      "assigned_units": [],
+      "clearance": 2,
+      "mfa_enabled": true
+    },
+    {
+      "user_id": "hipaa-officer",
+      "employee_id": "EMP-0381",
+      "name": "Dr. Sunita Verma",
+      "role": "HIPAA_Privacy_Officer",
+      "department": "Compliance & Legal",
+      "facility": "FAC-001",
+      "assigned_units": [],
+      "clearance": 4,
+      "mfa_enabled": true
+    },
+    {
+      "user_id": "researcher-das",
+      "employee_id": "EMP-0391",
+      "name": "Dr. Anirban Das",
+      "role": "Clinical_Researcher",
+      "department": "Quality Assurance",
+      "facility": "FAC-005",
+      "assigned_units": [],
+      "clearance": 2,
+      "mfa_enabled": true
+    }
+  ]
+}
