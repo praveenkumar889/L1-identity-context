@@ -270,3 +270,5 @@ l1-identity-context/
 | `L1_JWT_ALGORITHM` | `RS256` | JWT signature algorithm |
 | `L1_JWT_LEEWAY_SECONDS` | `30` | Clock skew tolerance |
 | `L1_BTG_MIN_REASON_LENGTH` | `20` | Min BTG justification chars |
+| `L1_JWT_PRIVATE_KEY_PATH` | path | Optional PEM file containing RSA private key used for signing (overrides mock generation) |
+| `L1_JWT_PUBLIC_KEY_PATH`  | path | Optional PEM file containing RSA public key used for verification; supersedes JWKS |

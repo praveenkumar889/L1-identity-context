@@ -107,6 +107,51 @@ class TestResolveSecurityContext:
         )
         assert r.status_code == 401
 
+    def test_resolve_invalid_signature_401(self, client, invalid_signature_token):
+        r = client.post(
+            "/resolve-security-context",
+            headers={"Authorization": f"Bearer {invalid_signature_token}"},
+        )
+        assert r.status_code == 401
+        assert "Invalid signature" in r.json().get("detail", "")
+
+    def test_external_file_signed_token(self, client):
+        """Manually sign a payload using the provided private key file and
+        ensure the service validates it (static key path logic)."""
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.backends import default_backend
+        from app.config import get_settings
+        import jwt, time, uuid
+
+        # load private key from file (same that settings point to)
+        with open("app/keys/knk_private.pem", "rb") as f:
+            priv = serialization.load_pem_private_key(f.read(), password=None, backend=default_backend())
+
+        now = int(time.time())
+        payload = {
+            "oid": "oid-dr-patel-4521",
+            "sub": "oid-dr-patel-4521",
+            "name": "Dr. Rajesh Patel",
+            "preferred_username": "dr.patel@apollohospitals.com",
+            "email": "dr.patel@apollohospitals.com",
+            "roles": ["ATTENDING_PHYSICIAN"],
+            "groups": ["clinical-cardiology"],
+            "amr": ["pwd", "mfa"],
+            "jti": str(uuid.uuid4()),
+            "iss": get_settings().AZURE_ISSUER,
+            "aud": get_settings().AZURE_CLIENT_ID,
+            "iat": now,
+            "nbf": now,
+            "exp": now + 3600,
+        }
+        token = jwt.encode(payload, priv, algorithm="RS256", headers={"kid": "mock-key-1"})
+
+        r = client.post(
+            "/resolve-security-context",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200
+
     def test_resolve_no_bearer_prefix_401(self, client, valid_token):
         r = client.post(
             "/resolve-security-context",
@@ -115,8 +160,9 @@ class TestResolveSecurityContext:
         assert r.status_code == 401
 
     def test_resolve_no_auth_header_422(self, client):
+        # with HTTPBearer security the missing header yields 401 Unauthorized
         r = client.post("/resolve-security-context")
-        assert r.status_code == 422  # missing required header
+        assert r.status_code == 401
 
 
 class TestBreakGlass:

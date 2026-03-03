@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "RS256"
     JWT_LEEWAY_SECONDS: int = 30                                      # clock skew tolerance
 
+    # ── Static keypair (optional) ──
+    # If provided, these PEM files are used for signing/verification regardless
+    # of MOCK_IDP_ENABLED.  This allows the service to operate with a fixed
+    # keypair in any environment.
+    JWT_PRIVATE_KEY_PATH: str | None = None
+    JWT_PUBLIC_KEY_PATH: str | None = None
+
     # ── SecurityContext ──
     CONTEXT_TTL_NORMAL: int = 900                                     # 15 minutes
     CONTEXT_TTL_EMERGENCY: int = 14400                                # 4 hours (BTG)
@@ -50,6 +57,7 @@ class Settings(BaseSettings):
 
     # ── Mock IdP (dev only — generates RSA keypair + test JWTs) ──
     MOCK_IDP_ENABLED: bool = True
+    # MOCK_IDP_ENABLED: bool = False
     MOCK_IDP_RSA_KEY_SIZE: int = 2048
 
     # ── Data paths ──

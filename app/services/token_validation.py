@@ -56,19 +56,44 @@ class ValidatedClaims:
 
 class MockKeyPair:
     """Generates and holds an RSA keypair for local JWT signing/verification.
-    Used when MOCK_IDP_ENABLED=True (no Azure AD dependency)."""
+    Used when MOCK_IDP_ENABLED=True (no Azure AD dependency).
+
+    If the configuration specifies `JWT_PRIVATE_KEY_PATH` (and optionally
+    `JWT_PUBLIC_KEY_PATH`), the keys are loaded from those files instead of
+    being generated.  This lets the service sign tokens with a persistent
+    keypair in any mode.
+    """
 
     _instance: Optional["MockKeyPair"] = None
 
     def __init__(self):
-        logger.info("[MockIdP] Generating RSA-%d keypair for local JWT signing",
-                     get_settings().MOCK_IDP_RSA_KEY_SIZE)
-        self._private_key = rsa.generate_private_key(
-            public_exponent=65537,
-            key_size=get_settings().MOCK_IDP_RSA_KEY_SIZE,
-            backend=default_backend(),
-        )
-        self._public_key = self._private_key.public_key()
+        settings = get_settings()
+        if settings.JWT_PRIVATE_KEY_PATH:
+            logger.info("[MockIdP] Loading RSA keypair from %s",
+                        settings.JWT_PRIVATE_KEY_PATH)
+            with open(settings.JWT_PRIVATE_KEY_PATH, "rb") as f:
+                priv_pem = f.read()
+            self._private_key = serialization.load_pem_private_key(
+                priv_pem, password=None, backend=default_backend()
+            )
+            # derive public key from private key unless explicit path provided
+            if settings.JWT_PUBLIC_KEY_PATH:
+                with open(settings.JWT_PUBLIC_KEY_PATH, "rb") as f:
+                    pub_pem = f.read()
+                self._public_key = serialization.load_pem_public_key(
+                    pub_pem, backend=default_backend()
+                )
+            else:
+                self._public_key = self._private_key.public_key()
+        else:
+            logger.info("[MockIdP] Generating RSA-%d keypair for local JWT signing",
+                        settings.MOCK_IDP_RSA_KEY_SIZE)
+            self._private_key = rsa.generate_private_key(
+                public_exponent=65537,
+                key_size=settings.MOCK_IDP_RSA_KEY_SIZE,
+                backend=default_backend(),
+            )
+            self._public_key = self._private_key.public_key()
 
     @classmethod
     def get(cls) -> "MockKeyPair":
@@ -143,12 +168,26 @@ class TokenValidator:
     def _resolve_signing_key(self, token: str) -> Any:
         """Resolve the public key to verify the JWT signature.
 
-        In mock mode → uses the MockKeyPair public key.
-        In production → fetches from Azure AD JWKS endpoint, matched by kid.
+        Priority order:
+          1. If a static public key path is configured, load that key.
+          2. If mock mode is active, use the MockKeyPair public key.
+          3. Otherwise, fetch from the JWKS URI based on the token's kid.
         """
+        # 1. static public key takes precedence
+        if self._settings.JWT_PUBLIC_KEY_PATH:
+            try:
+                with open(self._settings.JWT_PUBLIC_KEY_PATH, "rb") as f:
+                    pem = f.read()
+                return serialization.load_pem_public_key(pem, backend=default_backend())
+            except Exception as e:
+                logger.error("Failed loading public key from %s: %s", self._settings.JWT_PUBLIC_KEY_PATH, e)
+                raise TokenValidationError(f"Cannot load public key: {e}")
+
+        # 2. mock keypair if enabled
         if self._settings.MOCK_IDP_ENABLED:
             return MockKeyPair.get().public_key
 
+        # 3. fallback to JWKS endpoint
         client = self._get_jwks_client()
         if client is None:
             raise TokenValidationError("JWKS client not available")
@@ -204,7 +243,29 @@ class TokenValidator:
             raise TokenValidationError("Invalid audience")
         except pyjwt.InvalidIssuerError:
             raise TokenValidationError("Invalid issuer")
-        except pyjwt.InvalidSignatureError:
+        except pyjwt.InvalidSignatureError as ise:
+            # log debug info to help troubleshoot mismatched keys
+            try:
+                unverified = pyjwt.get_unverified_header(token)
+            except Exception:
+                unverified = {"error": "unable to parse header"}
+            # prepare a safe representation of the public key
+            key_repr = str(key)
+            try:
+                # If object supports serialization, export PEM
+                key_repr = key.public_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PublicFormat.SubjectPublicKeyInfo,
+                )
+            except Exception:
+                # fall back to str() if serialization fails
+                pass
+            logger.debug(
+                "Invalid signature while validating token. header=%s public_key=%s",
+                unverified,
+                # show only beginning of key to avoid huge logs
+                key_repr[:200] if isinstance(key_repr, (bytes, str)) else str(key_repr),
+            )
             raise TokenValidationError("Invalid signature")
         except pyjwt.DecodeError as e:
             raise TokenValidationError(f"Token decode failed: {e}")

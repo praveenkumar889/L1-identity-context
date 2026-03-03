@@ -15,7 +15,8 @@ import time
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.config import get_settings
 from app.models import (
@@ -35,6 +36,11 @@ from app.dependencies import get_context_builder, get_redis_store, get_signer, g
 from app.services.rate_limiter import RateLimiter
 
 logger = logging.getLogger("l1.api")
+
+# ── Security scheme for proper Bearer token handling in Swagger ──
+security = HTTPBearer(
+    description="Bearer token (Azure AD JWT or mock JWT in dev mode)"
+)
 
 router = APIRouter()
 
@@ -60,7 +66,7 @@ router = APIRouter()
 )
 async def resolve_security_context(
     request: Request,
-    authorization: str = Header(..., description="Bearer <JWT>"),
+    credentials: HTTPAuthorizationCredentials = Security(security),
     builder: ContextBuilder = Depends(get_context_builder),
     limiter: RateLimiter = Depends(get_rate_limiter),
 ):
@@ -80,10 +86,7 @@ async def resolve_security_context(
     limiter.check("resolve", ip, max_requests=30, window_seconds=60)
 
     # ── Extract Bearer token ──
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Authorization header must be: Bearer <token>")
-
-    raw_token = authorization[7:].strip()
+    raw_token = credentials.credentials.strip()
     if not raw_token:
         raise HTTPException(status_code=401, detail="Empty bearer token")
 
@@ -154,7 +157,7 @@ async def resolve_security_context(
 async def break_glass(
     req: BreakGlassRequest,
     request: Request,
-    authorization: str = Header(..., description="Bearer <JWT> — must match the SecurityContext owner"),
+    credentials: HTTPAuthorizationCredentials = Security(security),
     builder: ContextBuilder = Depends(get_context_builder),
     validator: TokenValidator = Depends(get_token_validator),
     store: RedisStore = Depends(get_redis_store),
@@ -170,9 +173,7 @@ async def break_glass(
     limiter.check("btg", ip, max_requests=5, window_seconds=60)
 
     # ── Authenticate caller (using DI-injected validator) ──
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Authorization header must be: Bearer <token>")
-    raw_token = authorization[7:].strip()
+    raw_token = credentials.credentials.strip()
     if not raw_token:
         raise HTTPException(status_code=401, detail="Empty bearer token")
 
@@ -243,7 +244,7 @@ async def break_glass(
 async def revoke_context(
     req: RevokeRequest,
     request: Request,
-    authorization: str = Header(..., description="Bearer <JWT> — must match the SecurityContext owner"),
+    credentials: HTTPAuthorizationCredentials = Security(security),
     builder: ContextBuilder = Depends(get_context_builder),
     validator: TokenValidator = Depends(get_token_validator),
     store: RedisStore = Depends(get_redis_store),
@@ -259,9 +260,7 @@ async def revoke_context(
     limiter.check("revoke", ip, max_requests=10, window_seconds=60)
 
     # ── Authenticate caller (using DI-injected validator) ──
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Authorization header must be: Bearer <token>")
-    raw_token = authorization[7:].strip()
+    raw_token = credentials.credentials.strip()
     if not raw_token:
         raise HTTPException(status_code=401, detail="Empty bearer token")
 
