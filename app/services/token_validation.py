@@ -44,6 +44,7 @@ class ValidatedClaims:
     name: str                               # Display name
     email: str                              # preferred_username or email
     roles: list[str] = field(default_factory=list)
+    effective_roles: list[str] = field(default_factory=list)
     groups: list[str] = field(default_factory=list)
     amr: list[str] = field(default_factory=list)  # Authentication methods
     jti: str = ""                           # JWT ID (unique token identifier)
@@ -276,7 +277,17 @@ class TokenValidator:
         oid = decoded.get("oid") or decoded.get("sub", "")
         name = decoded.get("name", "")
         email = decoded.get("preferred_username") or decoded.get("email", "")
-        roles = decoded.get("roles", [])
+        # Support alternate role claim names for compatibility
+        roles = (
+            decoded.get("roles")
+            or decoded.get("direct_roles")
+            or decoded.get("raw_roles")
+            or []
+        )
+        effective_roles = (
+            decoded.get("effective_roles")
+            or []
+        )
         groups = decoded.get("groups", [])
         amr = decoded.get("amr", [])
         jti_val = decoded.get("jti", "")
@@ -296,6 +307,7 @@ class TokenValidator:
             name=name,
             email=email,
             roles=roles if isinstance(roles, list) else [roles],
+            effective_roles=effective_roles if isinstance(effective_roles, list) else [effective_roles],
             groups=groups if isinstance(groups, list) else [groups],
             amr=amr if isinstance(amr, list) else [amr],
             jti=jti_val,

@@ -12,7 +12,9 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 
+
 from app.models.enums import ClearanceLevel, Domain, EmergencyMode
+from app.models.security_context import SecurityContext
 
 
 # ─────────────────────────────────────────────────────────
@@ -36,12 +38,18 @@ class ContextPreview(BaseModel):
 
 
 class ResolveContextResponse(BaseModel):
-    """Response from POST /resolve-security-context."""
-    ctx_token: str = Field(..., description="Opaque context ID (ctx_<uuid>) — use as key for downstream calls")
-    signature: str = Field(..., description="HMAC-SHA256 hex digest of the SecurityContext")
-    expires_in: int = Field(..., description="TTL in seconds")
-    created_at: datetime
-    context_preview: ContextPreview
+    """Response from POST /resolve-security-context.
+    
+    Returns a lightweight summary for the client.
+    Full SecurityContext is stored in Redis for downstream layers.
+    """
+    context_token_id: str = Field(..., description="Opaque context ID (ctx_<uuid>)")
+    user_id: str = Field(..., description="User OID")
+    effective_roles: list[str] = Field(..., description="Resolved effective roles")
+    max_clearance_level: int = Field(..., description="User's clearance level")
+    context_type: str = Field(default="NORMAL", description="Context type (NORMAL or EMERGENCY)")
+    ttl_seconds: int = Field(..., description="TTL in seconds")
+    signature: str = Field(..., description="HMAC-SHA256 hex digest")
 
 
 # ─────────────────────────────────────────────────────────
