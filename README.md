@@ -42,8 +42,42 @@ The `ContextBuilder` constructs an immutable `SecurityContext` containing five b
 *   **HMAC Signing**: The entire context is serialized and signed with HMAC-SHA256 using a cluster-wide secret key.
 *   **Redis Persistence**: The context is stored in Redis with a TTL (900s for normal, 4h for BTG) keyed by a unique `ctx_token`.
 
-### 8. Consumer Retrieval (L2–L8)
-Downstream layers (Knowledge Graph, Policy Engine) use the `ctx_token` to retrieve the full, verified context. They verify the signature to ensure zero tampering between layers.
+---
+
+## End-to-End Data Resolution Example
+
+To provide maximum clarity, here is how a single request travels through the resolution logic:
+
+### Input: Raw User Request
+A user provides a JWT containing the role: `Attending_Physician`.
+
+### Phase 1: Identity & Enrichment
+*   **OID**: Extracted as `oid-dr-patel-4521`.
+*   **HR Lookup**: System confirms this user belongs to the `Cardiology` department and is `ACTIVE`.
+
+### Phase 2: Role & Hierarchy Resolution (Neo4j)
+The system queries Neo4j to expand the hierarchy:
+1.  **Direct Role**: `Attending_Physician`
+2.  **Inheritance**: `Attending_Physician` → `Physician` → `Clinical_Staff` → `Licensed_Professional` → `Employee`.
+3.  **Effective Roles**: All 5 roles are added to the list.
+
+### Phase 3: Metadata Aggregation
+The system scans all effective roles for relationships:
+*   **Clearance**: `Physician` role defines `level: 2`.
+*   **Allowed Domains**:
+    *   `Physician` → accesses `Clinical`.
+    *   `Attending_Physician` → accesses `Lab`, `Pharmacy`.
+*   **Result**: User gets access to `['Clinical', 'Lab', 'Pharmacy']`.
+
+### Output: ResolveContextResponse
+```json
+{
+  "role": ["Attending_Physician"],
+  "effective_roles": ["Attending_Physician", "Physician", "Clinical_Staff", ...],
+  "max_clearance_level": 2,
+  "allowed_domains": ["Clinical", "Lab", "Pharmacy"]
+}
+```
 
 ---
 
@@ -113,7 +147,12 @@ Downstream layers (Knowledge Graph, Policy Engine) use the `ctx_token` to retrie
 ## Quick Start
 
 ```bash
+# 1. Create your environment file
+cp .env.example .env
+
+# 2. Start the services (FastAPI + Redis)
 docker compose up --build
+
 # → http://localhost:8001/docs
 ```
 
