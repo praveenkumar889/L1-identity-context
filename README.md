@@ -5,6 +5,48 @@ Layer 1: SecurityContext Assembly
 
 ---
 
+## Working Flow (End-to-End)
+
+The L1 layer follows a strict 8-step pipeline to transform a raw identity into a verified, high-trust SecurityContext.
+
+### 1. Token Acquisition (JWT)
+The process begins when a client (Frontend or API) obtains an Azure AD JWT (or a mock JWT in dev). This token contains the user's base identity (`oid`) and initial roles.
+
+### 2. Validation & Claim Extraction
+The `TokenValidator` executes:
+*   **Signature Verification**: Matches the `kid` in the header to the JWKS endpoint (or mock RSA keypair) and verifies the RS256 signature.
+*   **Time Bounds**: Checks `exp`, `nbf`, and `iat`.
+*   **Robust Extraction**: Scans multiple claims (`roles`, `groups`, `scp`, `direct_roles`) and normalizes delimited strings into lists.
+
+### 3. User Enrichment (Mock HR/LDAP)
+The `UserEnrichmentService` matches the `oid` against the Apollo Organisational Directory:
+*   Fetches `employee_id`, `department`, `facility_ids`, and `license_type`.
+*   Enforces `ACTIVE` employment status (Zero-Trust Deny-by-Default).
+
+### 4. Dynamic Role Resolution (Neo4j)
+The `RoleResolver` uses Neo4j as the authoritative source of truth:
+*   **Direct Role Merge**: Unions roles from the JWT with roles explicitly assigned in Neo4j via `HAS_ROLE` relationships.
+*   **Case-Insensitive Match**: Uses `toLower()` to ensure `ATTENDING_PHYSICIAN` in JWT matches `Attending_Physician` in the graph.
+*   **Hierarchy Expansion**: Traverses the `INHERITS_FROM*0..` relationship to resolve parent roles (e.g., Physician → Clinical_Staff → Employee).
+
+### 5. Clearance & Domain Computation
+Metadata is aggregated from the **full effective role list**:
+*   **Clearance Level**: Assigned based on the highest sensitivity property (`level`) found in any role.
+*   **Allowed Domains**: Aggregates all `ACCESSES_DOMAIN` targets (e.g., `Clinical`, `Pharmacy`, `Lab`).
+*   **MFA Cap**: If 'mfa' is missing from the JWT's `amr` claim, a "sensitivity cap" is applied (clearance - 1).
+
+### 6. SecurityContext Assembly
+The `ContextBuilder` constructs an immutable `SecurityContext` containing five blocks: **Identity, OrgContext, Authorization, RequestMetadata, and Emergency**. 
+
+### 7. Signing & Storage
+*   **HMAC Signing**: The entire context is serialized and signed with HMAC-SHA256 using a cluster-wide secret key.
+*   **Redis Persistence**: The context is stored in Redis with a TTL (900s for normal, 4h for BTG) keyed by a unique `ctx_token`.
+
+### 8. Consumer Retrieval (L2–L8)
+Downstream layers (Knowledge Graph, Policy Engine) use the `ctx_token` to retrieve the full, verified context. They verify the signature to ensure zero tampering between layers.
+
+---
+
 ## Architecture
 
 ```
@@ -120,16 +162,18 @@ curl -s -X POST http://localhost:8001/break-glass \
     "employment_status": "ACTIVE"
   },
   "authorization": {
-    "direct_roles": ["ATTENDING_PHYSICIAN"],
+    "role": ["Attending_Physician"],
+    "direct_roles": ["Attending_Physician"],
     "effective_roles": [
-      "ATTENDING_PHYSICIAN", "CLINICIAN",
-      "EMPLOYEE", "HEALTHCARE_PROVIDER",
-      "HIPAA_COVERED_ENTITY", "SENIOR_CLINICIAN"
+      "Attending_Physician", "Physician",
+      "Clinical_Staff", "Licensed_Professional",
+      "Employee"
     ],
     "groups": ["clinical-cardiology"],
     "domain": "CLINICAL",
-    "clearance_level": 4,
-    "sensitivity_cap": 4,
+    "clearance_level": 2,
+    "sensitivity_cap": 2,
+    "allowed_domains": ["Clinical", "Lab", "Pharmacy"],
     "bound_policies": ["CLIN-001", "HIPAA-001"]
   },
   "request_metadata": {

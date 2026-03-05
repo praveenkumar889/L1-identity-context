@@ -114,8 +114,10 @@ async def resolve_security_context(
     return ResolveContextResponse(
         context_token_id=ctx.ctx_id,
         user_id=ctx.identity.oid,
+        role=ctx.authorization.direct_roles,
         effective_roles=ctx.authorization.effective_roles,
         max_clearance_level=ctx.authorization.clearance_level,
+        allowed_domains=ctx.authorization.allowed_domains,
         context_type="NORMAL",
         ttl_seconds=ctx.ttl_seconds,
         signature=signature,

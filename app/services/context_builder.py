@@ -31,7 +31,7 @@ from app.models import (
     AuthorizationBlock,
     RequestMetadataBlock,
     EmergencyBlock,
-    ClearanceLevel,
+    EmergencyBlock,
     EmergencyMode,
 )
 from app.services.token_validation import TokenValidator, TokenValidationError
@@ -117,9 +117,9 @@ class ContextBuilder:
         except UnknownUserError as e:
             raise ContextBuildError(str(e), status_code=403)
 
-        # ── Step 4: Resolve roles + clearance ──
+        # ── Step 4: Resolve roles + clearance from Neo4j (OID Authoritative) ──
         mfa_verified = "mfa" in claims.amr
-        resolved = self._role_resolver.resolve(claims.roles, mfa_verified)
+        resolved = self._role_resolver.full_resolve(claims.oid, claims.roles, mfa_verified)
 
         # ── Step 5: Build SecurityContext ──
         now = datetime.now(timezone.utc)
@@ -154,6 +154,7 @@ class ContextBuilder:
                 domain=resolved.domain,
                 clearance_level=resolved.clearance_level,
                 sensitivity_cap=resolved.sensitivity_cap,
+                allowed_domains=resolved.allowed_domains,
                 bound_policies=resolved.bound_policies,
             ),
             request_metadata=RequestMetadataBlock(
@@ -255,8 +256,9 @@ class ContextBuilder:
                 effective_roles=ctx.authorization.effective_roles,
                 groups=ctx.authorization.groups,
                 domain=ctx.authorization.domain,
-                clearance_level=ClearanceLevel.RESTRICTED,      # elevated to max
-                sensitivity_cap=ClearanceLevel.RESTRICTED,       # cap removed
+                clearance_level=1,                              # elevated to max (Neo4j level 1)
+                sensitivity_cap=1,                              # cap removed
+                allowed_domains=ctx.authorization.allowed_domains,
                 bound_policies=sorted(set(ctx.authorization.bound_policies) | {"BTG-001"}),
             ),
             request_metadata=ctx.request_metadata,

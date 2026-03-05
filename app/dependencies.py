@@ -8,6 +8,8 @@ Initialised once at application startup via the lifespan context.
 
 from __future__ import annotations
 from typing import Optional
+import logging
+from neo4j import GraphDatabase, Driver
 
 from app.services.token_validation import TokenValidator
 from app.services.user_enrichment import UserEnrichmentService
@@ -16,7 +18,9 @@ from app.services.signing import SecurityContextSigner
 from app.services.redis_store import RedisStore
 from app.services.rate_limiter import RateLimiter
 from app.services.context_builder import ContextBuilder
+from app.config import get_settings
 
+logger = logging.getLogger("l1.dependencies")
 
 class ServiceContainer:
     """Holds all service singletons.  Initialised in app lifespan."""
@@ -29,12 +33,22 @@ class ServiceContainer:
         self.redis_store: Optional[RedisStore] = None
         self.rate_limiter: Optional[RateLimiter] = None
         self.context_builder: Optional[ContextBuilder] = None
+        self.neo4j_driver: Optional[Driver] = None
 
     def initialise(self) -> None:
         """Wire up all services."""
+        settings = get_settings()
+
+        # Initialise Neo4j Driver
+        logger.info("🔗 Initialising Neo4j driver connection to %s", settings.NEO4J_URI)
+        self.neo4j_driver = GraphDatabase.driver(
+            settings.NEO4J_URI,
+            auth=(settings.NEO4J_USERNAME, settings.NEO4J_PASSWORD)
+        )
+
         self.token_validator = TokenValidator()
         self.enrichment_service = UserEnrichmentService()
-        self.role_resolver = RoleResolver()
+        self.role_resolver = RoleResolver(driver=self.neo4j_driver)
         self.signer = SecurityContextSigner()
         self.redis_store = RedisStore()
         self.rate_limiter = RateLimiter()
@@ -46,6 +60,16 @@ class ServiceContainer:
             redis_store=self.redis_store,
         )
 
+    def shutdown(self) -> None:
+        """Cleanly close connections."""
+        if self.neo4j_driver:
+            logger.info("🔗 Closing Neo4j driver connection")
+            self.neo4j_driver.close()
+        
+        if self.redis_store:
+            logger.info("💾 Closing Redis connection")
+            # RedisStore cleanup if needed (Redis client handles this mostly)
+            pass
 
 # Module-level singleton
 container = ServiceContainer()

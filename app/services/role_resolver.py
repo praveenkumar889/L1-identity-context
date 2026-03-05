@@ -1,329 +1,240 @@
 """
-role_resolver.py — Role Inheritance & Clearance Resolution
-==========================================================
+role_resolver.py — Role Inheritance & Clearance Resolution (Strict Reference Alignment)
+=====================================================================================
 
-Implements a mock Neo4j-style directed acyclic graph (DAG) for role inheritance.
-
-In production, this would execute Cypher:
-    MATCH (r:Role {name: $role})-[:INHERITS_FROM*]->(parent:Role)
-    RETURN collect(parent.name) AS ancestors
-
-For the MVP, the inheritance tree and clearance mappings are hardcoded
-from the Apollo Hospitals RBAC specification.
-
-Key concepts:
-  - Direct roles:    Roles directly assigned to the user (from JWT)
-  - Effective roles: Direct roles + all inherited ancestor roles
-  - Clearance:       Max data sensitivity tier (1–5) mapped from role
-  - Sensitivity cap: Effective clearance after MFA check (no MFA → reduced)
-  - Domain:          Primary data domain boundary (Clinical, Financial, etc.)
-  - Bound policies:  Policy IDs that apply to the role set
+Follows the provided reference samples for Neo4j resolution logic:
+- INHERITS_FROM*0.. traversal for effective roles.
+- ACCESSES_DOMAIN for domain aggregation.
+- BaseRoleResolver abstract pattern.
+- User profile lookup for Staff/Doctor labels.
 """
 
 from __future__ import annotations
 import logging
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Any
+from neo4j import GraphDatabase, Driver
 
-from app.models.enums import ClearanceLevel, Domain
+from app.models.enums import Domain
+from app.config import get_settings
 
 logger = logging.getLogger("l1.role_resolver")
 
-
-# ─────────────────────────────────────────────────────────
-# ROLE INHERITANCE GRAPH (mock Neo4j)
-# ─────────────────────────────────────────────────────────
-# Format:  ROLE → [PARENT_1, PARENT_2, ...]
-# Read as: "ROLE inherits from PARENT_1 and PARENT_2"
-
-ROLE_INHERITANCE: dict[str, list[str]] = {
-    # ── Clinical hierarchy ──
-    "ATTENDING_PHYSICIAN":     ["SENIOR_CLINICIAN"],
-    "CONSULTING_PHYSICIAN":    ["CLINICIAN"],
-    "EMERGENCY_PHYSICIAN":     ["SENIOR_CLINICIAN", "EMERGENCY_RESPONDER"],
-    "PSYCHIATRIST":            ["SENIOR_CLINICIAN", "RESTRICTED_DATA_HANDLER"],
-    "RESIDENT":                ["CLINICIAN"],
-    "SENIOR_CLINICIAN":        ["CLINICIAN"],
-    "CLINICIAN":               ["HEALTHCARE_PROVIDER", "HIPAA_COVERED_ENTITY"],
-    "HEALTHCARE_PROVIDER":     ["EMPLOYEE"],
-
-    # ── Nursing hierarchy ──
-    "HEAD_NURSE":              ["SENIOR_NURSE"],
-    "ICU_NURSE":               ["SENIOR_NURSE"],
-    "SENIOR_NURSE":            ["REGISTERED_NURSE"],
-    "REGISTERED_NURSE":        ["NURSING_STAFF"],
-    "NURSING_STAFF":           ["HEALTHCARE_PROVIDER", "HIPAA_COVERED_ENTITY"],
-
-    # ── Business / Revenue ──
-    "REVENUE_CYCLE_MANAGER":   ["FINANCE_STAFF"],
-    "REVENUE_CYCLE_ANALYST":   ["FINANCE_STAFF"],
-    "BILLING_CLERK":           ["FINANCE_STAFF"],
-    "FINANCE_STAFF":           ["BUSINESS_STAFF", "HIPAA_COVERED_ENTITY"],
-    "BUSINESS_STAFF":          ["EMPLOYEE"],
-
-    # ── Administrative ──
-    "HR_DIRECTOR":             ["HR_STAFF", "SENSITIVE_DATA_HANDLER"],
-    "HR_MANAGER":              ["HR_STAFF"],
-    "HR_STAFF":                ["ADMIN_STAFF"],
-    "ADMIN_STAFF":             ["EMPLOYEE"],
-
-    # ── IT ──
-    "IT_ADMINISTRATOR":        ["IT_STAFF"],
-    "IT_STAFF":                ["EMPLOYEE"],
-
-    # ── Compliance ──
-    "HIPAA_PRIVACY_OFFICER":   ["COMPLIANCE_STAFF", "AUDIT_REVIEWER", "RESTRICTED_DATA_HANDLER"],
-    "COMPLIANCE_STAFF":        ["EMPLOYEE"],
-
-    # ── Research ──
-    "CLINICAL_RESEARCHER":     ["RESEARCH_STAFF", "HIPAA_COVERED_ENTITY"],
-    "RESEARCH_STAFF":          ["EMPLOYEE"],
-
-    # ── Base / abstract roles (no parents) ──
-    "EMPLOYEE":                [],
-    "HIPAA_COVERED_ENTITY":    [],
-    "EMERGENCY_RESPONDER":     [],
-    "RESTRICTED_DATA_HANDLER": [],
-    "SENSITIVE_DATA_HANDLER":  [],
-    "AUDIT_REVIEWER":          [],
-}
-
-
-# ─────────────────────────────────────────────────────────
-# ROLE → CLEARANCE LEVEL MAPPING
-# ─────────────────────────────────────────────────────────
-
-ROLE_CLEARANCE: dict[str, ClearanceLevel] = {
-    # Level 5 — Restricted
-    "PSYCHIATRIST":            ClearanceLevel.RESTRICTED,
-    "HIPAA_PRIVACY_OFFICER":   ClearanceLevel.RESTRICTED,
-
-    # Level 4 — Highly Confidential
-    "ATTENDING_PHYSICIAN":     ClearanceLevel.HIGHLY_CONFIDENTIAL,
-    "EMERGENCY_PHYSICIAN":     ClearanceLevel.HIGHLY_CONFIDENTIAL,
-    "HR_DIRECTOR":             ClearanceLevel.HIGHLY_CONFIDENTIAL,
-    "SENIOR_CLINICIAN":        ClearanceLevel.HIGHLY_CONFIDENTIAL,
-
-    # Level 3 — Confidential
-    "CONSULTING_PHYSICIAN":    ClearanceLevel.CONFIDENTIAL,
-    "RESIDENT":                ClearanceLevel.CONFIDENTIAL,
-    "HEAD_NURSE":              ClearanceLevel.CONFIDENTIAL,
-    "ICU_NURSE":               ClearanceLevel.CONFIDENTIAL,
-    "HR_MANAGER":              ClearanceLevel.CONFIDENTIAL,
-    "SENIOR_NURSE":            ClearanceLevel.CONFIDENTIAL,
-
-    # Level 2 — Internal
-    "REGISTERED_NURSE":        ClearanceLevel.INTERNAL,
-    "BILLING_CLERK":           ClearanceLevel.INTERNAL,
-    "REVENUE_CYCLE_ANALYST":   ClearanceLevel.INTERNAL,
-    "REVENUE_CYCLE_MANAGER":   ClearanceLevel.INTERNAL,
-    "IT_ADMINISTRATOR":        ClearanceLevel.INTERNAL,
-    "CLINICAL_RESEARCHER":     ClearanceLevel.INTERNAL,
-
-    # Level 1 — Public (fallback for unknown roles)
-    "EMPLOYEE":                ClearanceLevel.PUBLIC,
-}
-
-# MFA_REDUCTION: clearance is reduced by this many levels if MFA is absent
-MFA_ABSENT_REDUCTION = 1
-
-
-# ─────────────────────────────────────────────────────────
-# ROLE → DOMAIN MAPPING
-# ─────────────────────────────────────────────────────────
-
-ROLE_DOMAIN: dict[str, Domain] = {
-    "ATTENDING_PHYSICIAN":     Domain.CLINICAL,
-    "CONSULTING_PHYSICIAN":    Domain.CLINICAL,
-    "EMERGENCY_PHYSICIAN":     Domain.CLINICAL,
-    "PSYCHIATRIST":            Domain.CLINICAL,
-    "RESIDENT":                Domain.CLINICAL,
-    "HEAD_NURSE":              Domain.CLINICAL,
-    "ICU_NURSE":               Domain.CLINICAL,
-    "REGISTERED_NURSE":        Domain.CLINICAL,
-
-    "BILLING_CLERK":           Domain.FINANCIAL,
-    "REVENUE_CYCLE_ANALYST":   Domain.FINANCIAL,
-    "REVENUE_CYCLE_MANAGER":   Domain.FINANCIAL,
-
-    "HR_MANAGER":              Domain.ADMINISTRATIVE,
-    "HR_DIRECTOR":             Domain.ADMINISTRATIVE,
-
-    "IT_ADMINISTRATOR":        Domain.IT_OPERATIONS,
-
-    "HIPAA_PRIVACY_OFFICER":   Domain.COMPLIANCE,
-
-    "CLINICAL_RESEARCHER":     Domain.RESEARCH,
-}
-
-
-# ─────────────────────────────────────────────────────────
-# ROLE → POLICY BINDING
-# ─────────────────────────────────────────────────────────
-
-ROLE_POLICIES: dict[str, list[str]] = {
-    "ATTENDING_PHYSICIAN":     ["CLIN-001", "HIPAA-001"],
-    "CONSULTING_PHYSICIAN":    ["CLIN-001", "HIPAA-001"],
-    "EMERGENCY_PHYSICIAN":     ["CLIN-001", "HIPAA-001", "BTG-001"],
-    "PSYCHIATRIST":            ["CLIN-001", "HIPAA-001", "CFR42-001"],
-    "RESIDENT":                ["CLIN-001", "HIPAA-001"],
-    "HEAD_NURSE":              ["CLIN-002", "HIPAA-001"],
-    "ICU_NURSE":               ["CLIN-002", "HIPAA-001"],
-    "REGISTERED_NURSE":        ["CLIN-002", "HIPAA-001"],
-    "BILLING_CLERK":           ["BIZ-001", "HIPAA-001", "SEC-002"],
-    "REVENUE_CYCLE_ANALYST":   ["BIZ-001", "HIPAA-001"],
-    "REVENUE_CYCLE_MANAGER":   ["BIZ-001", "HIPAA-001"],
-    "HR_MANAGER":              ["HR-001", "SEC-003"],
-    "HR_DIRECTOR":             ["HR-001", "HR-002", "SEC-003"],
-    "IT_ADMINISTRATOR":        ["IT-001"],
-    "HIPAA_PRIVACY_OFFICER":   ["COMP-001", "HIPAA-001", "AUDIT-001"],
-    "CLINICAL_RESEARCHER":     ["RES-001", "HIPAA-001"],
-}
-
-
-# ─────────────────────────────────────────────────────────
-# RESOLVER OUTPUT
-# ─────────────────────────────────────────────────────────
-
 @dataclass
 class ResolvedRoles:
-    """Output of role resolution — everything authorization-related."""
+    """Consolidated output of role and metadata resolution."""
     direct_roles: list[str]
     effective_roles: list[str]
     domain: Domain
-    clearance_level: ClearanceLevel
-    sensitivity_cap: ClearanceLevel
+    clearance_level: int
+    sensitivity_cap: int
+    allowed_domains: list[str] = field(default_factory=list)
     bound_policies: list[str] = field(default_factory=list)
+    department: Optional[str] = None
+    facility_id: Optional[str] = None
 
+class BaseRoleResolver(ABC):
+    """Abstract base class as provided in reference."""
+    @abstractmethod
+    def resolve(self, direct_roles: List[str]) -> List[str]:
+        pass
 
-# ─────────────────────────────────────────────────────────
-# ROLE RESOLVER
-# ─────────────────────────────────────────────────────────
+    @abstractmethod
+    def get_role_metadata(self, roles: List[str]) -> Dict:
+        pass
 
-class RoleResolver:
+class RoleResolver(BaseRoleResolver):
     """
-    Expands direct roles into effective roles via inheritance,
-    computes clearance level, applies MFA-based sensitivity cap.
-
-    Mock Neo4j pattern:
-        Given role ATTENDING_PHYSICIAN, walk the DAG:
-          ATTENDING_PHYSICIAN → SENIOR_CLINICIAN → CLINICIAN
-            → HEALTHCARE_PROVIDER → EMPLOYEE
-            → HIPAA_COVERED_ENTITY
-        Effective roles = all visited nodes.
+    Authoritative Neo4j Role Resolver.
+    Follows provided snippets for labels (Staff/Doctor) and properties (clearance_level).
     """
 
-    def resolve(self, direct_roles: list[str], mfa_verified: bool) -> ResolvedRoles:
+    def __init__(self, driver: Driver | None = None):
+        settings = get_settings()
+        if driver:
+            self.driver = driver
+        else:
+            self.driver = GraphDatabase.driver(
+                settings.NEO4J_URI,
+                auth=(settings.NEO4J_USERNAME, settings.NEO4J_PASSWORD)
+            )
+        self.database = settings.NEO4J_DATABASE
+
+    def get_user_profile(self, user_oid: str) -> Dict:
+        """From Neo4jUserProfileStore snippet: fetches staff/doctor data.
+        Modified to also fetch roles associated with the user.
         """
-        Resolve the full authorization envelope from direct roles.
-
-        Args:
-            direct_roles:  Role names from the JWT (e.g., ["ATTENDING_PHYSICIAN"])
-            mfa_verified:  True if the user authenticated with MFA
-
-        Returns:
-            ResolvedRoles with effective_roles, clearance, sensitivity_cap, domain, policies
+        query = """
+        MATCH (u)
+        WHERE (u:Staff OR u:Doctor OR u:User OR u:Person) 
+          AND (u.user_id = $uid OR u.oid = $uid OR u.name CONTAINS $uid)
+        OPTIONAL MATCH (u)-[:HAS_ROLE]->(r:Role)
+        RETURN u.user_id AS user_id,
+               u.department AS department,
+               u.facility_id AS facility,
+               u.clearance_level AS clearance_level,
+               u.max_clearance AS max_clearance,
+               collect(r.name) AS roles
         """
-        # ── 1. Normalise role names ──
-        normalised = [self._normalise(r) for r in direct_roles]
+        try:
+            with self.driver.session(database=self.database) as session:
+                result = session.run(query, uid=user_oid)
+                record = result.single()
+                if record:
+                    logger.info("Found user profile in Neo4j for %s", user_oid)
+                    return {
+                        "clearance": record["clearance_level"] or record["max_clearance"],
+                        "department": record["department"],
+                        "facility": record["facility"],
+                        "roles": [r for r in record["roles"] if r]
+                    }
+                else:
+                    logger.warning("No user profile found in Neo4j for %s", user_oid)
+        except Exception as e:
+            logger.error("Failed to fetch user profile from Neo4j: %s", e)
+        return {}
 
-        # ── 2. Expand inheritance (BFS over DAG) ──
-        effective = set()
-        for role in normalised:
-            effective.update(self._expand_role(role))
+    def resolve(self, direct_roles: List[str]) -> List[str]:
+        """From n204j_role_resolver snippet: traverses hierarchy."""
+        if not direct_roles:
+            return []
 
-        effective_list = sorted(effective)
+        effective_roles = set()
+        try:
+            with self.driver.session(database=self.database) as session:
+                for role_name in direct_roles:
+                    # Case-insensitive match using toLower for robustness
+                    query = """
+                    MATCH (r:Role)
+                    WHERE toLower(r.name) = toLower($role_name) AND r.is_active = true
+                    OPTIONAL MATCH (r)-[:INHERITS_FROM*0..]->(ancestor:Role)
+                    WHERE ancestor.is_active = true
+                    RETURN DISTINCT ancestor.name AS role
+                    """
+                    result = session.run(query, role_name=role_name)
+                    found = False
+                    for record in result:
+                        if record["role"]:
+                            effective_roles.add(record["role"])
+                            found = True
+                    if not found:
+                        logger.warning(f"Role '{role_name}' not found in Neo4j or is inactive.")
+                        effective_roles.add(role_name)
+        except Exception as e:
+            logger.error(f"Neo4j traversal failed: {e}")
+            effective_roles.update(direct_roles)
 
-        # ── 3. Compute clearance (max across all effective roles) ──
-        clearance = self._compute_clearance(effective)
+        return sorted(list(effective_roles))
 
-        # ── 4. Apply MFA cap ──
-        sensitivity_cap = self._apply_mfa_cap(clearance, mfa_verified)
+    def get_role_metadata(self, roles: List[str]) -> Dict:
+        """From n204j_role_resolver snippet: computes clearance and domains."""
+        if not roles:
+            return {"allowed_domains": [], "max_clearance_level": None}
 
-        # ── 5. Determine primary domain ──
-        domain = self._determine_domain(normalised)
+        allowed_domains = set()
+        # Case-insensitive match for metadata
+        query = """
+        MATCH (r:Role)
+        WHERE r.name IN $roles OR ANY(name IN $roles WHERE toLower(r.name) = toLower(name))
+        OPTIONAL MATCH (r)-[:ACCESSES_DOMAIN]->(d:Domain)
+        RETURN r.level AS level, d.name AS domain
+        """
+        levels = []
+        try:
+            with self.driver.session(database=self.database) as session:
+                result = session.run(query, roles=roles)
+                for record in result:
+                    if record["level"] is not None:
+                        levels.append(int(record["level"]))
+                    if record["domain"]:
+                        allowed_domains.add(record["domain"])
+        except Exception as e:
+            logger.error("Failed to fetch role metadata: %s", e)
 
-        # ── 6. Collect bound policies ──
-        policies = self._collect_policies(normalised)
+        return {
+            "allowed_domains": sorted(list(allowed_domains)),
+            "max_clearance_level": min(levels) if levels else None
+        }
 
+    def full_resolve(self, user_oid: str, jwt_roles: List[str], mfa_verified: bool) -> ResolvedRoles:
+        """Orchestrates the individual reference methods.
+        
+        Resolution logic:
+          1. Roles: Union of JWT roles + Direct roles from Neo4j (HAS_ROLE)
+          2. Clearance: Profile clearance property > Min role level > Default (5)
+          3. Domain: Roles' primary domain > Default (CLINICAL)
+        """
+        # 1. Fetch User Data from Neo4j
+        profile = self.get_user_profile(user_oid)
+        
+        # 2. Resolve Direct Roles (Merge JWT + Neo4j)
+        neo4j_direct_roles = profile.get("roles", [])
+        direct_roles = list(set(jwt_roles) | set(neo4j_direct_roles))
+        
         logger.info(
-            "Roles resolved | direct=%s effective_count=%d clearance=%d cap=%d domain=%s",
-            normalised, len(effective_list), clearance, sensitivity_cap, domain.value,
+            "Resolving roles for %s | jwt_roles=%s neo4j_roles=%s combined=%s", 
+            user_oid, jwt_roles, neo4j_direct_roles, direct_roles
+        )
+        
+        if not direct_roles and not profile:
+            logger.warning("No roles or profile found for user %s. Using safe defaults.", user_oid)
+        
+        # 3. Resolve Effective Roles (Traverse Hierarchy)
+        effective_roles = self.resolve(direct_roles)
+        logger.info("Hierarchy expanded | input=%s effective=%s", direct_roles, effective_roles)
+        
+        # 4. Resolve Metadata from all roles
+        metadata = self.get_role_metadata(effective_roles)
+        
+        # 5. Final Clearance Logic
+        # Priority: explicit user property > role-based min level > default (5)
+        clearance = profile.get("clearance")
+        role_min_clearance = metadata.get("max_clearance_level")
+        
+        if clearance is None:
+            clearance = role_min_clearance or 5
+            logger.debug("Using role-based or default clearance: %s", clearance)
+        else:
+            logger.debug("Using explicit user-node clearance: %s", clearance)
+        
+        try:
+            clearance = int(clearance)
+        except (TypeError, ValueError):
+            clearance = 5
+            
+        logger.info(
+            "Clearance determined | user=%s level=%d (profile=%s, role_min=%s)",
+            user_oid, clearance, profile.get("clearance"), role_min_clearance
+        )
+            
+        # MFA Sensitivity Cap (M3/M5 Requirement)
+        # If not MFA verified, sensitivity_cap is clearance + 1 (lower access)
+        sensitivity_cap = clearance + (0 if mfa_verified else 1)
+        if sensitivity_cap > 5:
+            sensitivity_cap = 5
+        
+        # 6. Domain Normalization
+        allowed_domains = metadata.get("allowed_domains", [])
+        primary_domain_str = allowed_domains[0] if allowed_domains else "CLINICAL"
+        try:
+            domain = Domain(primary_domain_str.upper())
+        except:
+            domain = Domain.CLINICAL
+        
+        logger.debug(
+            "Full resolution complete | user=%s direct=%s effective=%s clearance=%d domains=%s",
+            user_oid, direct_roles, effective_roles, clearance, allowed_domains
         )
 
         return ResolvedRoles(
-            direct_roles=normalised,
-            effective_roles=effective_list,
+            direct_roles=sorted(direct_roles),
+            effective_roles=effective_roles,
             domain=domain,
             clearance_level=clearance,
             sensitivity_cap=sensitivity_cap,
-            bound_policies=policies,
+            allowed_domains=allowed_domains,
+            bound_policies=[],
+            department=profile.get("department"),
+            facility_id=profile.get("facility")
         )
-
-    # ── Internal helpers ──
-
-    @staticmethod
-    def _normalise(role: str) -> str:
-        """Normalise role name: strip, uppercase, replace spaces/hyphens with underscores."""
-        return role.strip().upper().replace(" ", "_").replace("-", "_")
-
-    def _expand_role(self, role: str) -> set[str]:
-        """BFS expansion: walk the inheritance DAG and collect all ancestors."""
-        visited: set[str] = set()
-        queue = [role]
-
-        while queue:
-            current = queue.pop(0)
-            if current in visited:
-                continue
-            visited.add(current)
-            parents = ROLE_INHERITANCE.get(current, [])
-            queue.extend(parents)
-
-        return visited
-
-    @staticmethod
-    def _compute_clearance(effective_roles: set[str]) -> ClearanceLevel:
-        """Max clearance across all effective roles."""
-        max_level = ClearanceLevel.PUBLIC
-        for role in effective_roles:
-            level = ROLE_CLEARANCE.get(role, ClearanceLevel.PUBLIC)
-            if level > max_level:
-                max_level = level
-        return ClearanceLevel(max_level)
-
-    @staticmethod
-    def _apply_mfa_cap(clearance: ClearanceLevel, mfa_verified: bool) -> ClearanceLevel:
-        """If MFA is absent, reduce sensitivity cap by MFA_ABSENT_REDUCTION.
-
-        Example:
-            Clearance 4 (Highly Confidential) + no MFA → cap at 3 (Confidential)
-            Clearance 2 (Internal) + no MFA → cap at 1 (Public)
-
-        This means without MFA, users cannot access data at their max clearance.
-        """
-        if mfa_verified:
-            return clearance
-
-        reduced = max(ClearanceLevel.PUBLIC, clearance - MFA_ABSENT_REDUCTION)
-        logger.warning(
-            "MFA absent — reducing sensitivity cap from %d to %d",
-            clearance, reduced,
-        )
-        return ClearanceLevel(reduced)
-
-    @staticmethod
-    def _determine_domain(direct_roles: list[str]) -> Domain:
-        """Determine primary domain from direct roles.
-        First match wins — direct roles are in priority order."""
-        for role in direct_roles:
-            if role in ROLE_DOMAIN:
-                return ROLE_DOMAIN[role]
-        return Domain.CLINICAL  # safe default for healthcare
-
-    @staticmethod
-    def _collect_policies(direct_roles: list[str]) -> list[str]:
-        """Collect de-duped policies bound to the direct roles."""
-        policies: set[str] = set()
-        for role in direct_roles:
-            policies.update(ROLE_POLICIES.get(role, []))
-        return sorted(policies)

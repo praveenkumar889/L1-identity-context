@@ -6,6 +6,8 @@ All tunables are environment-variable-driven (prefix: L1_).
 Secrets MUST be overridden in production via env or vault.
 """
 
+from typing import Optional
+
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
@@ -32,11 +34,11 @@ class Settings(BaseSettings):
     JWT_LEEWAY_SECONDS: int = 30                                      # clock skew tolerance
 
     # ── Static keypair (optional) ──
-    # If provided, these PEM files are used for signing/verification regardless
-    # of MOCK_IDP_ENABLED.  This allows the service to operate with a fixed
-    # keypair in any environment.
-    JWT_PRIVATE_KEY_PATH: str | None = None
-    JWT_PUBLIC_KEY_PATH: str | None = None
+    # These PEM files are used for signing/verification regardless
+    # of MOCK_IDP_ENABLED. This allows the service to operate 
+    # with a fixed keypair in any environment.
+    JWT_PRIVATE_KEY_PATH: Optional[str] = None
+    JWT_PUBLIC_KEY_PATH: Optional[str] = None
 
     # ── SecurityContext ──
     CONTEXT_TTL_NORMAL: int = 900                                     # 15 minutes
@@ -50,6 +52,12 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_KEY_PREFIX: str = "zt:l1:"
     REDIS_JTI_BLACKLIST_PREFIX: str = "zt:l1:jti:blacklist:"
+
+    # ── Neo4j ──
+    NEO4J_URI: str = "neo4j+s://342034a8.databases.neo4j.io"
+    NEO4J_USERNAME: str = "342034a8"
+    NEO4J_PASSWORD: str = "AmXYohE88lsgoR_DrC0aAfcnDV2IEIck9T12AnIwu5w"
+    NEO4J_DATABASE: str = "342034a8"
 
     # ── Break-the-Glass ──
     BTG_MIN_REASON_LENGTH: int = 20

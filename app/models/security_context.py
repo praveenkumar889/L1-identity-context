@@ -68,11 +68,12 @@ class AuthorizationBlock(BaseModel):
     )
     groups: list[str] = Field(default_factory=list, description="Azure AD group memberships")
     domain: Domain = Field(..., description="Primary data domain")
-    clearance_level: ClearanceLevel = Field(..., description="Max data sensitivity tier this user can access")
-    sensitivity_cap: ClearanceLevel = Field(
+    clearance_level: int = Field(..., description="Max data sensitivity tier this user can access")
+    sensitivity_cap: int = Field(
         ...,
         description="Effective cap — may be reduced from clearance_level if MFA is absent"
     )
+    allowed_domains: list[str] = Field(default_factory=list, description="Domains this user has access to from Neo4j")
     bound_policies: list[str] = Field(default_factory=list, description="Policy IDs bound to this role")
 
 
@@ -101,7 +102,7 @@ class EmergencyBlock(BaseModel):
     patient_id: Optional[str] = Field(None, description="Patient ID that triggered BTG (audit trail)")
     activated_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
-    original_clearance: Optional[ClearanceLevel] = None
+    original_clearance: Optional[int] = None
 
 
 # ─────────────────────────────────────────────────────────

@@ -64,6 +64,7 @@ async def lifespan(app: FastAPI):
     logger.info("All services initialised")
     yield
     logger.info("L1 Identity & Context -- Shutting down")
+    container.shutdown()
 
 
 app = FastAPI(

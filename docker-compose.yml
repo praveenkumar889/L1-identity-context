@@ -1,19 +1,11 @@
-version: "3.9"
-
 services:
   l1-identity-context:
     build: .
     container_name: apollo-l1-identity
+    env_file: .env
     ports:
       - "8001:8001"
     environment:
-      - L1_DEBUG=true
-      - L1_MOCK_IDP_ENABLED=true
-      - L1_REDIS_URL=redis://redis:6379/0
-      - L1_HMAC_SECRET_KEY=apollo-zt-hmac-secret-CHANGE-IN-PROD-2026
-      - L1_CONTEXT_TTL_NORMAL=900
-      - L1_CONTEXT_TTL_EMERGENCY=14400
-      # static JWT key paths (inside container)
       - L1_JWT_PRIVATE_KEY_PATH=/app/app/keys/knk_private.pem
       - L1_JWT_PUBLIC_KEY_PATH=/app/app/keys/knk.pem
     depends_on:

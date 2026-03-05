@@ -45,8 +45,10 @@ class ResolveContextResponse(BaseModel):
     """
     context_token_id: str = Field(..., description="Opaque context ID (ctx_<uuid>)")
     user_id: str = Field(..., description="User OID")
+    role: list[str] = Field(default_factory=list, description="Direct roles from JWT or Neo4j")
     effective_roles: list[str] = Field(..., description="Resolved effective roles")
     max_clearance_level: int = Field(..., description="User's clearance level")
+    allowed_domains: list[str] = Field(default_factory=list, description="List of authorized data domains (e.g. Clinical, Lab)")
     context_type: str = Field(default="NORMAL", description="Context type (NORMAL or EMERGENCY)")
     ttl_seconds: int = Field(..., description="TTL in seconds")
     signature: str = Field(..., description="HMAC-SHA256 hex digest")

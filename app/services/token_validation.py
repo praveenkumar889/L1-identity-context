@@ -69,32 +69,34 @@ class MockKeyPair:
 
     def __init__(self):
         settings = get_settings()
+        
+        # 1. Load from private key path if provided
         if settings.JWT_PRIVATE_KEY_PATH:
-            logger.info("[MockIdP] Loading RSA keypair from %s",
+            logger.info("[MockIdP] Loading RSA private key from %s",
                         settings.JWT_PRIVATE_KEY_PATH)
-            with open(settings.JWT_PRIVATE_KEY_PATH, "rb") as f:
-                priv_pem = f.read()
-            self._private_key = serialization.load_pem_private_key(
-                priv_pem, password=None, backend=default_backend()
-            )
-            # derive public key from private key unless explicit path provided
-            if settings.JWT_PUBLIC_KEY_PATH:
-                with open(settings.JWT_PUBLIC_KEY_PATH, "rb") as f:
-                    pub_pem = f.read()
-                self._public_key = serialization.load_pem_public_key(
-                    pub_pem, backend=default_backend()
+            try:
+                with open(settings.JWT_PRIVATE_KEY_PATH, "rb") as f:
+                    priv_pem = f.read()
+                self._private_key = serialization.load_pem_private_key(
+                    priv_pem, password=None, backend=default_backend()
                 )
-            else:
+                
+                # ALWAYS derive public key from private key to ensure they match
                 self._public_key = self._private_key.public_key()
-        else:
-            logger.info("[MockIdP] Generating RSA-%d keypair for local JWT signing",
-                        settings.MOCK_IDP_RSA_KEY_SIZE)
-            self._private_key = rsa.generate_private_key(
-                public_exponent=65537,
-                key_size=settings.MOCK_IDP_RSA_KEY_SIZE,
-                backend=default_backend(),
-            )
-            self._public_key = self._private_key.public_key()
+                logger.debug("[MockIdP] Public key successfully derived from private key")
+                return
+            except Exception as e:
+                logger.error("Failed to load RSA private key from file: %s", e)
+
+        # 2. Otherwise: Generate new ones
+        logger.info("[MockIdP] Generating RSA-%d keypair for local JWT signing",
+                    settings.MOCK_IDP_RSA_KEY_SIZE)
+        self._private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=settings.MOCK_IDP_RSA_KEY_SIZE,
+            backend=default_backend(),
+        )
+        self._public_key = self._private_key.public_key()
 
     @classmethod
     def get(cls) -> "MockKeyPair":
@@ -170,11 +172,15 @@ class TokenValidator:
         """Resolve the public key to verify the JWT signature.
 
         Priority order:
-          1. If a static public key path is configured, load that key.
-          2. If mock mode is active, use the MockKeyPair public key.
+          1. If mock mode is active, use the MockKeyPair public key (derived from private key).
+          2. If a static public key path is configured, load that key.
           3. Otherwise, fetch from the JWKS URI based on the token's kid.
         """
-        # 1. static public key takes precedence
+        # 1. Mock mode takes full precedence for verification keys in dev
+        if self._settings.MOCK_IDP_ENABLED:
+            return MockKeyPair.get().public_key
+
+        # 2. Static public key path (for non-mock, manual key rotation)
         if self._settings.JWT_PUBLIC_KEY_PATH:
             try:
                 with open(self._settings.JWT_PUBLIC_KEY_PATH, "rb") as f:
@@ -183,10 +189,6 @@ class TokenValidator:
             except Exception as e:
                 logger.error("Failed loading public key from %s: %s", self._settings.JWT_PUBLIC_KEY_PATH, e)
                 raise TokenValidationError(f"Cannot load public key: {e}")
-
-        # 2. mock keypair if enabled
-        if self._settings.MOCK_IDP_ENABLED:
-            return MockKeyPair.get().public_key
 
         # 3. fallback to JWKS endpoint
         client = self._get_jwks_client()
@@ -275,21 +277,39 @@ class TokenValidator:
 
         # ── Extract Claims ──
         oid = decoded.get("oid") or decoded.get("sub", "")
-        name = decoded.get("name", "")
-        email = decoded.get("preferred_username") or decoded.get("email", "")
-        # Support alternate role claim names for compatibility
-        roles = (
+        name = decoded.get("name") or decoded.get("unique_name") or ""
+        email = decoded.get("preferred_username") or decoded.get("email") or decoded.get("upn", "")
+
+        # Extremely robust role extraction (M3/M5 Requirement: Handle various IdP formats)
+        raw_roles = (
             decoded.get("roles")
+            or decoded.get("role")
+            or decoded.get("groups")
             or decoded.get("direct_roles")
-            or decoded.get("raw_roles")
+            or decoded.get("scp")  # scopes sometimes used as roles
             or []
         )
-        effective_roles = (
-            decoded.get("effective_roles")
-            or []
-        )
-        groups = decoded.get("groups", [])
-        amr = decoded.get("amr", [])
+
+        def normalize_roles(val: Any) -> list[str]:
+            if not val:
+                return []
+            if isinstance(val, list):
+                # Flatten and filter empty
+                return [str(r).strip() for r in val if r]
+            if isinstance(val, str):
+                # Handle comma or space separated strings
+                import re
+                return [r.strip() for r in re.split(r'[,\s]+', val) if r.strip()]
+            return [str(val).strip()]
+
+        roles = normalize_roles(raw_roles)
+        
+        # Also check for effective_roles in the token
+        raw_effective = decoded.get("effective_roles") or []
+        effective_roles = normalize_roles(raw_effective)
+
+        groups = normalize_roles(decoded.get("groups", []))
+        amr = normalize_roles(decoded.get("amr", []))
         jti_val = decoded.get("jti", "")
 
         if not oid:
