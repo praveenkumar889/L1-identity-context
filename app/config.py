@@ -54,10 +54,10 @@ class Settings(BaseSettings):
     REDIS_JTI_BLACKLIST_PREFIX: str = "zt:l1:jti:blacklist:"
 
     # ── Neo4j ──
-    NEO4J_URI: str = "neo4j+s://342034a8.databases.neo4j.io"
-    NEO4J_USERNAME: str = "342034a8"
-    NEO4J_PASSWORD: str = "AmXYohE88lsgoR_DrC0aAfcnDV2IEIck9T12AnIwu5w"
-    NEO4J_DATABASE: str = "342034a8"
+    NEO4J_URI: str = "neo4j+s://<YOUR_INSTANCE_ID>.databases.neo4j.io"
+    NEO4J_USERNAME: str = "neo4j"
+    NEO4J_PASSWORD: str = ""
+    NEO4J_DATABASE: str = "neo4j"
 
     # ── Break-the-Glass ──
     BTG_MIN_REASON_LENGTH: int = 20
